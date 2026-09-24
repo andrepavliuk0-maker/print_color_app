@@ -1,10 +1,11 @@
-import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'dart:typed_data';
+import 'dart:math' as math;
 
 import 'package:file_picker/file_picker.dart';
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:image/image.dart' as img;
 
 import 'models/color_selection.dart';
@@ -21,25 +22,35 @@ void main() {
   );
 }
 
+// ============================================================
+// APPLICATION
+// ============================================================
+
 class PrintColorApp extends StatelessWidget {
   const PrintColorApp({
     super.key,
   });
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(
+    BuildContext context,
+  ) {
     return MaterialApp(
-      title: 'Print Color App',
       debugShowCheckedModeBanner: false,
+      title: 'Print Color App',
       theme: ThemeData(
         useMaterial3: true,
-        colorSchemeSeed: Colors.blue,
         brightness: Brightness.dark,
+        colorSchemeSeed: Colors.blue,
       ),
       home: const EditorPage(),
     );
   }
 }
+
+// ============================================================
+// EDITOR PAGE
+// ============================================================
 
 class EditorPage extends StatefulWidget {
   const EditorPage({
@@ -51,10 +62,15 @@ class EditorPage extends StatefulWidget {
       _EditorPageState();
 }
 
-class _EditorPageState extends State<EditorPage> {
-  // ============================================================
-  // IMAGE DATA
-  // ============================================================
+// ============================================================
+// EDITOR STATE
+// ============================================================
+
+class _EditorPageState
+    extends State<EditorPage> {
+  // ----------------------------------------------------------
+  // IMAGES
+  // ----------------------------------------------------------
 
   img.Image? originalImage;
   img.Image? processedImage;
@@ -64,13 +80,11 @@ class _EditorPageState extends State<EditorPage> {
   String? openedFileName;
   String? openedFilePath;
 
-  // ============================================================
+  // ----------------------------------------------------------
   // COLOR SELECTION
-  // ============================================================
+  // ----------------------------------------------------------
 
   RgbColor? selectedColor;
-
-  MaskData? mask;
 
   int? selectedX;
   int? selectedY;
@@ -80,31 +94,33 @@ class _EditorPageState extends State<EditorPage> {
 
   bool connectedOnly = false;
 
-  // ============================================================
+  MaskData? mask;
+
+  // ----------------------------------------------------------
   // CMYK
-  // ============================================================
+  // ----------------------------------------------------------
 
   CmykCorrection correction =
       const CmykCorrection();
 
-  // ============================================================
-  // GLOBAL IMAGE ADJUSTMENTS
-  // ============================================================
+  // ----------------------------------------------------------
+  // GLOBAL IMAGE CORRECTION
+  // ----------------------------------------------------------
 
   double brightness = 0.0;
   double contrast = 0.0;
   double saturation = 0.0;
 
-  // ============================================================
+  // ----------------------------------------------------------
   // PREVIEW
-  // ============================================================
+  // ----------------------------------------------------------
 
   bool showBefore = false;
-  bool showMask = true;
+  bool showMask = false;
 
-  // ============================================================
-  // PROCESSING STATE
-  // ============================================================
+  // ----------------------------------------------------------
+  // UI STATE
+  // ----------------------------------------------------------
 
   bool processing = false;
   bool exporting = false;
@@ -112,20 +128,18 @@ class _EditorPageState extends State<EditorPage> {
   String statusMessage =
       'Откройте изображение для начала работы';
 
-  Timer? _statusTimer;
-
-  // ============================================================
+  // ----------------------------------------------------------
   // HISTORY
-  // ============================================================
+  // ----------------------------------------------------------
 
   final List<_HistorySnapshot> history =
       <_HistorySnapshot>[];
 
   int historyIndex = -1;
 
-  // ============================================================
+  // ----------------------------------------------------------
   // OPEN IMAGE
-  // ============================================================
+  // ----------------------------------------------------------
 
   Future<void> _openImage() async {
     if (processing) {
@@ -142,10 +156,10 @@ class _EditorPageState extends State<EditorPage> {
           'jpeg',
           'webp',
           'bmp',
+          'gif',
           'tif',
           'tiff',
         ],
-        withData: true,
       );
 
       if (result == null ||
@@ -153,20 +167,17 @@ class _EditorPageState extends State<EditorPage> {
         return;
       }
 
-      final file = result.files.first;
+      final picked =
+          result.files.single;
 
-      Uint8List? bytes = file.bytes;
+      final path =
+          picked.path;
 
-      if (bytes == null &&
-          file.path != null) {
-        setState(() {
-          statusMessage =
-              'Не удалось получить данные файла';
-        });
-        return;
-      }
-
-      if (bytes == null) {
+      if (path == null ||
+          path.isEmpty) {
+        _showMessage(
+          'Не удалось получить путь к файлу.',
+        );
         return;
       }
 
@@ -176,31 +187,20 @@ class _EditorPageState extends State<EditorPage> {
             'Загрузка изображения...';
       });
 
-      await Future<void>.delayed(
-        const Duration(
-          milliseconds: 50,
-        ),
-      );
+      final bytes =
+          await File(path).readAsBytes();
 
       final decoded =
           img.decodeImage(bytes);
 
       if (decoded == null) {
-        if (!mounted) {
-          return;
-        }
-
-        setState(() {
-          processing = false;
-          statusMessage =
-              'Не удалось открыть изображение';
-        });
-
-        return;
+        throw Exception(
+          'Формат изображения не поддерживается.',
+        );
       }
 
-      final image =
-          decoded.clone();
+      final normalized =
+          img.Image.from(decoded);
 
       if (!mounted) {
         return;
@@ -211,26 +211,23 @@ class _EditorPageState extends State<EditorPage> {
             Uint8List.fromList(bytes);
 
         originalImage =
-            image;
+            normalized;
 
         processedImage =
-            image.clone();
+            normalized.clone();
 
         openedFileName =
-            file.name;
+            picked.name;
 
         openedFilePath =
-            file.path;
+            path;
 
         selectedColor = null;
         selectedX = null;
         selectedY = null;
 
-        mask = null;
-
         tolerance = 20.0;
         softness = 10.0;
-
         connectedOnly = false;
 
         correction =
@@ -240,8 +237,10 @@ class _EditorPageState extends State<EditorPage> {
         contrast = 0.0;
         saturation = 0.0;
 
+        mask = null;
+
         showBefore = false;
-        showMask = true;
+        showMask = false;
 
         history.clear();
         historyIndex = -1;
@@ -253,7 +252,7 @@ class _EditorPageState extends State<EditorPage> {
       });
 
       await _addHistoryPoint(
-        'Открытие изображения',
+        'Исходное изображение',
       );
     } catch (e) {
       if (!mounted) {
@@ -263,635 +262,16 @@ class _EditorPageState extends State<EditorPage> {
       setState(() {
         processing = false;
         statusMessage =
-            'Ошибка открытия: $e';
+            'Ошибка загрузки: $e';
       });
     }
   }
 
-  // ============================================================
-  // HISTORY
-  // ============================================================
-
-  Future<void> _addHistoryPoint(
-    String label,
-  ) async {
-    final image =
-        processedImage;
-
-    if (image == null) {
-      return;
-    }
-
-    final snapshot =
-        _createSnapshot(label);
-
-    if (historyIndex <
-        history.length - 1) {
-      history.removeRange(
-        historyIndex + 1,
-        history.length,
-      );
-    }
-
-    history.add(snapshot);
-
-    historyIndex =
-        history.length - 1;
-
-    if (history.length > 20) {
-      history.removeAt(0);
-      historyIndex =
-          history.length - 1;
-    }
-
-    await Future<void>.delayed(
-      Duration.zero,
-    );
-  }
-
-  _HistorySnapshot _createSnapshot(
-    String label,
-  ) {
-    return _HistorySnapshot(
-      label: label,
-      image: processedImage!.clone(),
-      color: selectedColor,
-      x: selectedX,
-      y: selectedY,
-      tolerance: tolerance,
-      softness: softness,
-      connectedOnly: connectedOnly,
-      correction: correction,
-      brightness: brightness,
-      contrast: contrast,
-      saturation: saturation,
-      mask: mask?.copy(),
-      time: _currentTime(),
-    );
-  }
-
-  String _currentTime() {
-    final now =
-        DateTime.now();
-
-    final hour =
-        now.hour.toString().padLeft(2, '0');
-
-    final minute =
-        now.minute.toString().padLeft(2, '0');
-
-    final second =
-        now.second.toString().padLeft(2, '0');
-
-    return '$hour:$minute:$second';
-  }
-
-  // ============================================================
-  // UNDO
-  // ============================================================
-
-  Future<void> _undo() async {
-    if (processing) {
-      return;
-    }
-
-    if (historyIndex <= 0) {
-      return;
-    }
-
-    await _restoreHistory(
-      historyIndex - 1,
-    );
-  }
-
-  // ============================================================
-  // REDO
-  // ============================================================
-
-  Future<void> _redo() async {
-    if (processing) {
-      return;
-    }
-
-    if (historyIndex >=
-        history.length - 1) {
-      return;
-    }
-
-    await _restoreHistory(
-      historyIndex + 1,
-    );
-  }
-
-  // ============================================================
-  // SMALL DELAY
-  // ============================================================
-
-  Future<void> _smallDelay() async {
-    await Future<void>.delayed(
-      const Duration(
-        milliseconds: 10,
-      ),
-    );
-  }
-
-  // ============================================================
-  // CLAMP
-  // ============================================================
-
-  double _clamp01(
-    double value,
-  ) {
-    if (value < 0) {
-      return 0;
-    }
-
-    if (value > 1) {
-      return 1;
-    }
-
-    return value;
-  }
-
-  // ============================================================
-  // STATUS
-  // ============================================================
-
-  void _setStatus(
-    String message,
-  ) {
-    if (!mounted) {
-      return;
-    }
-
-    setState(() {
-      statusMessage =
-          message;
-    });
-
-    _statusTimer?.cancel();
-
-    _statusTimer =
-        Timer(
-      const Duration(
-        seconds: 5,
-      ),
-      () {
-        if (!mounted) {
-          return;
-        }
-
-        setState(() {
-          if (originalImage == null) {
-            statusMessage =
-                'Откройте изображение для начала работы';
-          } else {
-            statusMessage =
-                'Готово';
-          }
-        });
-      },
-    );
-  }  // ============================================================
-  // MASK GENERATION
-  // ============================================================
-
-  Future<void> _generateMask() async {
-    final image = originalImage;
-    final color = selectedColor;
-
-    if (image == null || color == null) {
-      if (mounted) {
-        setState(() {
-          mask = null;
-          statusMessage =
-              'Сначала выберите цвет на изображении';
-        });
-      }
-      return;
-    }
-
-    setState(() {
-      processing = true;
-      statusMessage =
-          'Создание маски...';
-    });
-
-    await _smallDelay();
-
-    try {
-      final selection = ColorSelection(
-        color: color,
-        tolerance: tolerance,
-        softness: softness,
-        connectedOnly: connectedOnly,
-      );
-
-      final generatedMask =
-          await compute(
-        _generateMaskTask,
-        _MaskTask(
-          image: image.clone(),
-          selection: selection,
-          tapX: selectedX,
-          tapY: selectedY,
-        ),
-      );
-
-      if (!mounted) {
-        return;
-      }
-
-      setState(() {
-        mask = generatedMask;
-        processing = false;
-        statusMessage =
-            'Маска создана: '
-            '${generatedMask.selectedPercentage.toStringAsFixed(2)}% изображения';
-      });
-    } catch (e) {
-      if (!mounted) {
-        return;
-      }
-
-      setState(() {
-        processing = false;
-        statusMessage =
-            'Ошибка создания маски: $e';
-      });
-    }
-  }
-
-  // ============================================================
-  // REBUILD CURRENT MASK
-  // ============================================================
-
-  Future<void> _rebuildCurrentMask() async {
-    if (originalImage == null ||
-        selectedColor == null) {
-      return;
-    }
-
-    await _generateMask();
-
-    if (!mounted ||
-        mask == null) {
-      return;
-    }
-
-    await _processImage();
-  }
-
-  // ============================================================
-  // PROCESS IMAGE
-  // ============================================================
-
-  Future<void> _processImage() async {
-    final source = originalImage;
-    final currentMask = mask;
-
-    if (source == null) {
-      return;
-    }
-
-    if (currentMask == null) {
-      if (mounted) {
-        setState(() {
-          processedImage =
-              source.clone();
-        });
-      }
-
-      return;
-    }
-
-    setState(() {
-      processing = true;
-      statusMessage =
-          'Обработка изображения...';
-    });
-
-    await _smallDelay();
-
-    try {
-      final result =
-          await compute(
-        _processCmykTask,
-        _CmykTask(
-          image: source.clone(),
-          mask: currentMask.copy(),
-          correction: correction,
-        ),
-      );
-
-      if (!mounted) {
-        return;
-      }
-
-      setState(() {
-        processedImage = result;
-        processing = false;
-        statusMessage =
-            'Обработка завершена';
-      });
-    } catch (e) {
-      if (!mounted) {
-        return;
-      }
-
-      setState(() {
-        processing = false;
-        statusMessage =
-            'Ошибка обработки: $e';
-      });
-    }
-  }
-
-  // ============================================================
-  // REPROCESS CURRENT SETTINGS
-  // ============================================================
-
-  Future<void> _reprocessFromCurrentSettings() async {
-    if (originalImage == null) {
-      return;
-    }
-
-    if (selectedColor != null) {
-      await _generateMask();
-
-      if (mask != null) {
-        await _processImage();
-      }
-    } else {
-      await _applyGlobalAdjustments();
-    }
-  }
-
-  // ============================================================
-  // GLOBAL ADJUSTMENTS
-  // ============================================================
-
-  Future<void> _applyGlobalAdjustments() async {
-    final source = originalImage;
-
-    if (source == null) {
-      return;
-    }
-
-    setState(() {
-      processing = true;
-      statusMessage =
-          'Применение общих настроек...';
-    });
-
-    await _smallDelay();
-
-    try {
-      final result =
-          source.clone();
-
-      for (var y = 0;
-          y < result.height;
-          y++) {
-        for (var x = 0;
-            x < result.width;
-            x++) {
-          final pixel =
-              source.getPixel(x, y);
-
-          var r =
-              pixel.r.toDouble();
-
-          var g =
-              pixel.g.toDouble();
-
-          var b =
-              pixel.b.toDouble();
-
-          // ------------------------------------------------------
-          // BRIGHTNESS
-          // ------------------------------------------------------
-
-          final brightnessValue =
-              brightness * 2.55;
-
-          r += brightnessValue;
-          g += brightnessValue;
-          b += brightnessValue;
-
-          // ------------------------------------------------------
-          // CONTRAST
-          // ------------------------------------------------------
-
-          final contrastFactor =
-              (259.0 *
-                      (contrast + 255.0)) /
-                  (255.0 *
-                      (259.0 - contrast));
-
-          r = contrastFactor *
-                  (r - 128.0) +
-              128.0;
-
-          g = contrastFactor *
-                  (g - 128.0) +
-              128.0;
-
-          b = contrastFactor *
-                  (b - 128.0) +
-              128.0;
-
-          // ------------------------------------------------------
-          // SATURATION
-          // ------------------------------------------------------
-
-          final gray =
-              0.299 * r +
-                  0.587 * g +
-                  0.114 * b;
-
-          final saturationFactor =
-              1.0 +
-                  saturation / 100.0;
-
-          r = gray +
-              (r - gray) *
-                  saturationFactor;
-
-          g = gray +
-              (g - gray) *
-                  saturationFactor;
-
-          b = gray +
-              (b - gray) *
-                  saturationFactor;
-
-          result.setPixelRgba(
-            x,
-            y,
-            r.round().clamp(
-              0,
-              255,
-            ),
-            g.round().clamp(
-              0,
-              255,
-            ),
-            b.round().clamp(
-              0,
-              255,
-            ),
-            pixel.a
-                .toInt()
-                .clamp(
-                  0,
-                  255,
-                ),
-          );
-        }
-      }
-
-      if (!mounted) {
-        return;
-      }
-
-      setState(() {
-        processedImage =
-            result;
-
-        processing = false;
-
-        statusMessage =
-            'Общие настройки применены';
-      });
-    } catch (e) {
-      if (!mounted) {
-        return;
-      }
-
-      setState(() {
-        processing = false;
-        statusMessage =
-            'Ошибка обработки: $e';
-      });
-    }
-  }
-
-  // ============================================================
-  // APPLY CMYK CHANGES
-  // ============================================================
-
-  Future<void> _applyCmykChanges() async {
-    if (originalImage == null) {
-      return;
-    }
-
-    if (mask == null) {
-      if (mounted) {
-        setState(() {
-          statusMessage =
-              'Сначала выберите область для коррекции';
-        });
-      }
-
-      return;
-    }
-
-    await _processImage();
-
-    if (!mounted) {
-      return;
-    }
-
-    await _addHistoryPoint(
-      'CMYK коррекция',
-    );
-  }
-
-  // ============================================================
-  // RESET CMYK
-  // ============================================================
-
-  Future<void> _resetCmyk() async {
-    if (originalImage == null ||
-        processing) {
-      return;
-    }
-
-    setState(() {
-      correction =
-          const CmykCorrection();
-    });
-
-    await _processImage();
-
-    if (!mounted) {
-      return;
-    }
-
-    await _addHistoryPoint(
-      'Сброс CMYK',
-    );
-  }
-
-  // ============================================================
-  // APPLY GLOBAL CHANGES
-  // ============================================================
-
-  Future<void> _applyGlobalChanges() async {
-    if (originalImage == null ||
-        processing) {
-      return;
-    }
-
-    await _applyGlobalAdjustments();
-
-    if (!mounted) {
-      return;
-    }
-
-    await _addHistoryPoint(
-      'Общая коррекция',
-    );
-  }
-
-  // ============================================================
-  // RESET GLOBAL
-  // ============================================================
-
-  Future<void> _resetGlobal() async {
-    if (originalImage == null ||
-        processing) {
-      return;
-    }
-
-    setState(() {
-      brightness = 0;
-      contrast = 0;
-      saturation = 0;
-    });
-
-    if (selectedColor != null &&
-        mask != null) {
-      await _processImage();
-    } else {
-      await _applyGlobalAdjustments();
-    }
-
-    if (!mounted) {
-      return;
-    }
-
-    await _addHistoryPoint(
-      'Сброс общих настроек',
-    );
-  }
-
-  // ============================================================
-  // PICK COLOR
-  // ============================================================
-
-  Future<void> _pickColorAt(
+  // ----------------------------------------------------------
+  // COLOR PICK
+  // ----------------------------------------------------------
+
+  Future<void> _pickColor(
     int x,
     int y,
   ) async {
@@ -900,6 +280,13 @@ class _EditorPageState extends State<EditorPage> {
 
     if (image == null ||
         processing) {
+      return;
+    }
+
+    if (x < 0 ||
+        y < 0 ||
+        x >= image.width ||
+        y >= image.height) {
       return;
     }
 
@@ -918,64 +305,759 @@ class _EditorPageState extends State<EditorPage> {
       selectedColor = color;
       selectedX = x;
       selectedY = y;
+      showMask = true;
 
       statusMessage =
           'Выбран цвет ${color.hex}';
     });
 
-    await _generateMask();
+    await _generateSelection();
+  }
 
-    if (!mounted ||
-        mask == null) {
+  // ----------------------------------------------------------
+  // GENERATE SELECTION
+  // ----------------------------------------------------------
+
+  Future<void> _generateSelection() async {
+    final image =
+        originalImage;
+
+    final color =
+        selectedColor;
+
+    if (image == null ||
+        color == null) {
       return;
     }
 
-    await _processImage();
+    setState(() {
+      processing = true;
+      statusMessage =
+          'Создание цветовой маски...';
+    });
 
+    try {
+      final selection =
+          ColorSelection(
+        color: color,
+        tolerance: tolerance,
+        softness: softness,
+        connectedOnly:
+            connectedOnly,
+      );
+
+      final generated =
+          MaskGenerator.generate(
+        image: image,
+        selection: selection,
+        tapX: selectedX,
+        tapY: selectedY,
+      );
+
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        mask = generated;
+        processing = false;
+
+        statusMessage =
+            'Выбрано '
+            '${generated.selectedPercentage.toStringAsFixed(2)}% '
+            'изображения';
+      });
+    } catch (e) {
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        processing = false;
+        statusMessage =
+            'Ошибка создания маски: $e';
+      });
+    }
+  }
+
+  // ----------------------------------------------------------
+  // APPLY CMYK
+  // ----------------------------------------------------------
+
+  Future<void> _applyCmyk() async {
+    final image =
+        originalImage;
+
+    final currentMask =
+        mask;
+
+    if (image == null ||
+        currentMask == null) {
+      _showMessage(
+        'Сначала выберите цвет.',
+      );
+      return;
+    }
+
+    if (correction.isNeutral) {
+      _showMessage(
+        'CMYK-коррекция не изменена.',
+      );
+      return;
+    }
+
+    setState(() {
+      processing = true;
+      statusMessage =
+          'Применение CMYK-коррекции...';
+    });
+
+    try {
+      final result =
+          CmykProcessor.applyCorrection(
+        source:
+            processedImage ??
+                image,
+        mask: currentMask,
+        correction: correction,
+      );
+
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        processedImage = result;
+        processing = false;
+
+        statusMessage =
+            'CMYK-коррекция применена';
+      });
+
+      await _addHistoryPoint(
+        'CMYK-коррекция',
+      );
+    } catch (e) {
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        processing = false;
+        statusMessage =
+            'Ошибка CMYK: $e';
+      });
+    }
+  }
+
+  // ----------------------------------------------------------
+  // APPLY GLOBAL CORRECTIONS
+  // ----------------------------------------------------------
+
+  Future<void> _applyGlobalCorrections() async {
+    final image =
+        processedImage ??
+            originalImage;
+
+    if (image == null) {
+      return;
+    }
+
+    if (brightness == 0 &&
+        contrast == 0 &&
+        saturation == 0) {
+      _showMessage(
+        'Глобальная коррекция не изменена.',
+      );
+      return;
+    }
+
+    setState(() {
+      processing = true;
+      statusMessage =
+          'Применение общей коррекции...';
+    });
+
+    await Future<void>.delayed(
+      const Duration(
+        milliseconds: 10,
+      ),
+    );
+
+    try {
+      final result =
+          _applyGlobalToImage(
+        image,
+      );
+
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        processedImage = result;
+        processing = false;
+
+        statusMessage =
+            'Общая коррекция применена';
+      });
+
+      await _addHistoryPoint(
+        'Общая коррекция',
+      );
+    } catch (e) {
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        processing = false;
+        statusMessage =
+            'Ошибка коррекции: $e';
+      });
+    }
+  }
+
+  // ----------------------------------------------------------
+  // GLOBAL IMAGE PROCESSOR
+  // ----------------------------------------------------------
+
+  img.Image _applyGlobalToImage(
+    img.Image source,
+  ) {
+    final result =
+        source.clone();
+
+    final brightnessFactor =
+        brightness / 100.0;
+
+    final contrastFactor =
+        (100.0 + contrast) /
+        100.0;
+
+    final saturationFactor =
+        (100.0 + saturation) /
+        100.0;
+
+    for (var y = 0;
+        y < result.height;
+        y++) {
+      for (var x = 0;
+          x < result.width;
+          x++) {
+        final pixel =
+            source.getPixel(
+          x,
+          y,
+        );
+
+        var r =
+            pixel.r.toDouble();
+
+        var g =
+            pixel.g.toDouble();
+
+        var b =
+            pixel.b.toDouble();
+
+        r +=
+            brightnessFactor *
+            255.0;
+
+        g +=
+            brightnessFactor *
+            255.0;
+
+        b +=
+            brightnessFactor *
+            255.0;
+
+        r =
+            ((r - 128.0) *
+                    contrastFactor) +
+                128.0;
+
+        g =
+            ((g - 128.0) *
+                    contrastFactor) +
+                128.0;
+
+        b =
+            ((b - 128.0) *
+                    contrastFactor) +
+                128.0;
+
+        final gray =
+            0.299 * r +
+            0.587 * g +
+            0.114 * b;
+
+        r =
+            gray +
+            (r - gray) *
+                saturationFactor;
+
+        g =
+            gray +
+            (g - gray) *
+                saturationFactor;
+
+        b =
+            gray +
+            (b - gray) *
+                saturationFactor;
+
+        result.setPixelRgba(
+          x,
+          y,
+          _byte(r),
+          _byte(g),
+          _byte(b),
+          pixel.a.toInt(),
+        );
+      }
+    }
+
+    return result;
+  }
+
+  // ----------------------------------------------------------
+  // BYTE CLAMP
+  // ----------------------------------------------------------
+
+  int _byte(
+    double value,
+  ) {
+    return value
+        .round()
+        .clamp(
+          0,
+          255,
+        );
+  }
+
+  // ----------------------------------------------------------
+  // MESSAGE
+  // ----------------------------------------------------------
+
+  void _showMessage(
+    String message,
+  ) {
     if (!mounted) {
       return;
     }
 
-    await _addHistoryPoint(
-      'Выбор цвета ${color.hex}',
+    ScaffoldMessenger.of(
+      context,
+    ).hideCurrentSnackBar();
+
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(
+      SnackBar(
+        content:
+            Text(message),
+      ),
+    );
+  }  // ============================================================
+  // SELECTION SETTINGS
+  // ============================================================
+
+  Future<void> _selectionSettingsChanged() async {
+    if (selectedColor == null) {
+      return;
+    }
+
+    await _generateSelection();
+  }
+
+  void _clearSelection() {
+    if (processing) {
+      return;
+    }
+
+    setState(() {
+      selectedColor = null;
+      selectedX = null;
+      selectedY = null;
+      mask = null;
+      showMask = false;
+
+      statusMessage =
+          'Выделение очищено';
+    });
+  }
+
+  // ============================================================
+  // CMYK RESET
+  // ============================================================
+
+  void _resetCmyk() {
+    if (processing) {
+      return;
+    }
+
+    setState(() {
+      correction =
+          const CmykCorrection();
+
+      statusMessage =
+          'CMYK-настройки сброшены';
+    });
+  }
+
+  // ============================================================
+  // GLOBAL RESET
+  // ============================================================
+
+  void _resetGlobal() {
+    if (processing) {
+      return;
+    }
+
+    setState(() {
+      brightness = 0.0;
+      contrast = 0.0;
+      saturation = 0.0;
+
+      statusMessage =
+          'Общие настройки сброшены';
+    });
+  }
+
+  // ============================================================
+  // CMYK SLIDER UPDATE
+  // ============================================================
+
+  void _setCyan(
+    double value,
+  ) {
+    setState(() {
+      correction =
+          correction.copyWith(
+        cyan: value,
+      );
+    });
+  }
+
+  void _setMagenta(
+    double value,
+  ) {
+    setState(() {
+      correction =
+          correction.copyWith(
+        magenta: value,
+      );
+    });
+  }
+
+  void _setYellow(
+    double value,
+  ) {
+    setState(() {
+      correction =
+          correction.copyWith(
+        yellow: value,
+      );
+    });
+  }
+
+  void _setBlack(
+    double value,
+  ) {
+    setState(() {
+      correction =
+          correction.copyWith(
+        black: value,
+      );
+    });
+  }
+
+  // ============================================================
+  // GLOBAL SLIDER UPDATE
+  // ============================================================
+
+  void _setBrightness(
+    double value,
+  ) {
+    setState(() {
+      brightness = value;
+    });
+  }
+
+  void _setContrast(
+    double value,
+  ) {
+    setState(() {
+      contrast = value;
+    });
+  }
+
+  void _setSaturation(
+    double value,
+  ) {
+    setState(() {
+      saturation = value;
+    });
+  }
+
+  // ============================================================
+  // MASK PREVIEW
+  // ============================================================
+
+  Color _maskColorForValue(
+    int value,
+  ) {
+    if (value <= 0) {
+      return Colors.transparent;
+    }
+
+    final alpha =
+        (value * 0.72)
+            .round()
+            .clamp(
+              0,
+              255,
+            );
+
+    return Color.fromARGB(
+      alpha,
+      0,
+      180,
+      255,
     );
   }
 
   // ============================================================
-  // IMAGE COORDINATES
+  // COLOR CHIP
   // ============================================================
 
-  Offset? _imagePointFromLocalPosition(
+  Widget _buildColorChip() {
+    final color =
+        selectedColor;
+
+    if (color == null) {
+      return Container(
+        width: 54,
+        height: 54,
+        decoration:
+            BoxDecoration(
+          borderRadius:
+              BorderRadius.circular(
+            10,
+          ),
+          border: Border.all(
+            color:
+                Theme.of(context)
+                    .dividerColor,
+          ),
+        ),
+        child: const Icon(
+          Icons.colorize,
+        ),
+      );
+    }
+
+    final materialColor =
+        Color.fromARGB(
+      255,
+      color.r,
+      color.g,
+      color.b,
+    );
+
+    return Container(
+      width: 54,
+      height: 54,
+      decoration:
+          BoxDecoration(
+        color: materialColor,
+        borderRadius:
+            BorderRadius.circular(
+          10,
+        ),
+        border: Border.all(
+          color: Colors.white,
+          width: 2,
+        ),
+        boxShadow: const [
+          BoxShadow(
+            blurRadius: 6,
+            spreadRadius: 1,
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ============================================================
+  // RANGE LABEL
+  // ============================================================
+
+  String _rangeDescription() {
+    if (tolerance <= 5) {
+      return 'Очень узкий';
+    }
+
+    if (tolerance <= 15) {
+      return 'Узкий';
+    }
+
+    if (tolerance <= 30) {
+      return 'Средний';
+    }
+
+    if (tolerance <= 50) {
+      return 'Широкий';
+    }
+
+    return 'Очень широкий';
+  }
+
+  // ============================================================
+  // MASK INFORMATION
+  // ============================================================
+
+  String _maskDescription() {
+    final currentMask =
+        mask;
+
+    if (currentMask == null) {
+      return 'Маска отсутствует';
+    }
+
+    if (currentMask.values.isEmpty) {
+      return 'Маска пустая';
+    }
+
+    final percentage =
+        currentMask
+            .selectedPercentage;
+
+    return 'Выбрано '
+        '${percentage.toStringAsFixed(2)}%';
+  }
+
+  // ============================================================
+  // BEFORE / AFTER STATE
+  // ============================================================
+
+  void _toggleBeforeAfter() {
+    if (originalImage == null ||
+        processedImage == null) {
+      return;
+    }
+
+    setState(() {
+      showBefore = !showBefore;
+
+      statusMessage =
+          showBefore
+              ? 'Показано исходное изображение'
+              : 'Показан результат';
+    });
+  }
+
+  // ============================================================
+  // MASK VISIBILITY
+  // ============================================================
+
+  void _toggleMask() {
+    if (mask == null) {
+      _showMessage(
+        'Сначала выберите цвет.',
+      );
+      return;
+    }
+
+    setState(() {
+      showMask = !showMask;
+
+      statusMessage =
+          showMask
+              ? 'Предпросмотр маски включён'
+              : 'Предпросмотр маски выключен';
+    });
+  }
+
+  // ============================================================
+  // IMAGE COORDINATE CONVERSION
+  // ============================================================
+
+  Offset _screenToImage(
     Offset localPosition,
     Size displaySize,
+    img.Image image,
   ) {
-    final image =
-        originalImage;
-
-    if (image == null) {
-      return null;
-    }
-
-    if (displaySize.width <= 0 ||
-        displaySize.height <= 0) {
-      return null;
-    }
-
-    final scaleX =
+    final imageRatio =
         image.width /
-            displaySize.width;
+            image.height;
 
-    final scaleY =
-        image.height /
+    final displayRatio =
+        displaySize.width /
             displaySize.height;
 
+    double renderedWidth;
+    double renderedHeight;
+
+    if (imageRatio >
+        displayRatio) {
+      renderedWidth =
+          displaySize.width;
+
+      renderedHeight =
+          renderedWidth /
+              imageRatio;
+    } else {
+      renderedHeight =
+          displaySize.height;
+
+      renderedWidth =
+          renderedHeight *
+              imageRatio;
+    }
+
+    final offsetX =
+        (displaySize.width -
+                renderedWidth) /
+            2.0;
+
+    final offsetY =
+        (displaySize.height -
+                renderedHeight) /
+            2.0;
+
     final x =
-        (localPosition.dx * scaleX)
-            .floor();
+        (localPosition.dx -
+                offsetX) *
+            image.width /
+            renderedWidth;
 
     final y =
-        (localPosition.dy * scaleY)
-            .floor();
+        (localPosition.dy -
+                offsetY) *
+            image.height /
+            renderedHeight;
+
+    return Offset(
+      x,
+      y,
+    );
+  }
+
+  // ============================================================
+  // SAFE IMAGE COORDINATES
+  // ============================================================
+
+  Offset? _validImagePoint(
+    Offset point,
+    img.Image image,
+  ) {
+    final x =
+        point.dx.floor();
+
+    final y =
+        point.dy.floor();
 
     if (x < 0 ||
         y < 0 ||
@@ -991,455 +1073,988 @@ class _EditorPageState extends State<EditorPage> {
   }
 
   // ============================================================
-  // EXPORT IMAGE
+  // COLOR DISTANCE
   // ============================================================
 
-  Future<void> _exportImage() async {
-    final image =
-        processedImage;
-
-    if (image == null ||
-        exporting) {
-      return;
-    }
-
-    setState(() {
-      exporting = true;
-      statusMessage =
-          'Подготовка экспорта...';
-    });
-
-    try {
-      final bytes =
-          await compute(
-        _encodePng,
-        image.clone(),
-      );
-
-      final name =
-          _baseName(
-        openedFileName ??
-            'corrected_image',
-      );
-
-      final fileName =
-          '${name}_corrected.png';
-
-      final path =
-          await FilePicker.saveFile(
-        dialogTitle:
-            'Экспорт изображения',
-        fileName:
-            fileName,
-        bytes:
-            bytes,
-        type:
-            FileType.custom,
-        allowedExtensions:
-            <String>['png'],
-      );
-
-      if (!mounted) {
-        return;
-      }
-
-      setState(() {
-        exporting = false;
-
-        if (path == null) {
-          statusMessage =
-              'Экспорт отменён';
-        } else {
-          statusMessage =
-              'Изображение экспортировано';
-        }
-      });
-    } catch (e) {
-      if (!mounted) {
-        return;
-      }
-
-      setState(() {
-        exporting = false;
-        statusMessage =
-            'Ошибка экспорта: $e';
-      });
-    }
-  }
-
-  // ============================================================
-  // BASE NAME
-  // ============================================================
-
-  String _baseName(
-    String name,
+  double _colorDistance(
+    RgbColor a,
+    RgbColor b,
   ) {
-    var result = name;
+    final dr =
+        a.r - b.r;
 
-    final dot =
-        result.lastIndexOf('.');
+    final dg =
+        a.g - b.g;
 
-    if (dot > 0) {
-      result =
-          result.substring(
-        0,
-        dot,
-      );
-    }
+    final db =
+        a.b - b.b;
 
-    result = result.trim();
-
-    if (result.isEmpty) {
-      return 'image';
-    }
-
-    return result;
-  }
-    // ============================================================
-  // PROJECT DATA
-  // ============================================================
-
-  Map<String, dynamic> _projectData() {
-    final image = originalImage;
-
-    return <String, dynamic>{
-      'app': 'Print Color App',
-      'version': 1,
-      'file': openedFileName,
-      'image': _imageInfo(image),
-      'selection': <String, dynamic>{
-        'color': selectedColor == null
-            ? null
-            : <String, dynamic>{
-                'r': selectedColor!.r,
-                'g': selectedColor!.g,
-                'b': selectedColor!.b,
-                'hex': selectedColor!.hex,
-              },
-        'x': selectedX,
-        'y': selectedY,
-        'tolerance': tolerance,
-        'softness': softness,
-        'connectedOnly': connectedOnly,
-      },
-      'cmyk': <String, dynamic>{
-        'cyan': correction.cyan,
-        'magenta': correction.magenta,
-        'yellow': correction.yellow,
-        'black': correction.black,
-      },
-      'global': <String, dynamic>{
-        'brightness': brightness,
-        'contrast': contrast,
-        'saturation': saturation,
-      },
-      'mask': mask == null
-          ? null
-          : <String, dynamic>{
-              'width': mask!.width,
-              'height': mask!.height,
-              'selectedPixels':
-                  mask!.selectedPixels,
-              'selectedPercentage':
-                  mask!.selectedPercentage,
-            },
-    };
-  }
-
-  String _projectJson() {
-    return const JsonEncoder.withIndent(
-      '  ',
-    ).convert(
-      _projectData(),
+    return math.sqrt(
+      dr * dr +
+          dg * dg +
+          db * db,
     );
   }
 
   // ============================================================
-  // PREVIEW PANEL
+  // SELECTION STATUS
   // ============================================================
 
-  Widget _buildPreviewPanel() {
-    final image =
-        showBefore
-            ? originalImage
-            : processedImage;
+  String _selectionStatus() {
+    if (selectedColor == null) {
+      return 'Нажмите на цвет изображения';
+    }
+
+    final distance =
+        selectedColor == null
+            ? 0.0
+            : _colorDistance(
+                selectedColor!,
+                selectedColor!,
+              );
+
+    return '${selectedColor!.hex} '
+        '• диапазон ${tolerance.round()}% '
+        '• расстояние ${distance.toStringAsFixed(0)}';
+  }
+
+  // ============================================================
+  // SAFE PROCESSING GUARD
+  // ============================================================
+
+  bool _canEdit() {
+    return originalImage != null &&
+        !processing;
+  }
+
+  // ============================================================
+  // KEYBOARD FOCUS
+  // ============================================================
+
+  final FocusNode _editorFocus =
+      FocusNode();
+
+  // ============================================================
+  // DISPOSE FOCUS NODE
+  // ============================================================
+    // ============================================================
+  // SELECTION PANEL
+  // ============================================================
+
+  Widget _buildSelectionPanel() {
+    final color = selectedColor;
 
     return Card(
-      margin: EdgeInsets.zero,
-      clipBehavior: Clip.antiAlias,
-      child: Column(
-        children: [
-          _buildPreviewToolbar(),
-
-          Expanded(
-            child: image == null
-                ? _buildEmptyPreview()
-                : _buildInteractiveImage(
-                    image,
+      margin: const EdgeInsets.all(12),
+      child: Padding(
+        padding: const EdgeInsets.all(14),
+        child: Column(
+          crossAxisAlignment:
+              CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                const Icon(
+                  Icons.colorize,
+                ),
+                const SizedBox(width: 8),
+                const Expanded(
+                  child: Text(
+                    'Выбор цвета',
+                    style: TextStyle(
+                      fontSize: 17,
+                      fontWeight:
+                          FontWeight.bold,
+                    ),
                   ),
-          ),
+                ),
+                if (color != null)
+                  IconButton(
+                    tooltip:
+                        'Очистить выделение',
+                    onPressed:
+                        processing
+                            ? null
+                            : _clearSelection,
+                    icon: const Icon(
+                      Icons.clear,
+                    ),
+                  ),
+              ],
+            ),
 
-          _buildPreviewStatus(),
-        ],
+            const SizedBox(height: 10),
+
+            Row(
+              children: [
+                _buildColorChip(),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment:
+                        CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        color == null
+                            ? 'Цвет не выбран'
+                            : color.hex,
+                        style:
+                            const TextStyle(
+                          fontWeight:
+                              FontWeight.bold,
+                        ),
+                      ),
+                      const SizedBox(
+                        height: 4,
+                      ),
+                      Text(
+                        _selectionStatus(),
+                        style:
+                            Theme.of(context)
+                                .textTheme
+                                .bodySmall,
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+
+            const SizedBox(height: 16),
+
+            _buildRangeSlider(
+              title: 'Диапазон оттенков',
+              value: tolerance,
+              min: 0,
+              max: 100,
+              divisions: 100,
+              suffix:
+                  '${tolerance.round()}%',
+              onChanged:
+                  processing
+                      ? null
+                      : (value) {
+                          setState(() {
+                            tolerance =
+                                value;
+                          });
+                        },
+              onChangeEnd:
+                  processing ||
+                          selectedColor ==
+                              null
+                      ? null
+                      : (_) {
+                          _selectionSettingsChanged();
+                        },
+            ),
+
+            Text(
+              _rangeDescription(),
+              style:
+                  Theme.of(context)
+                      .textTheme
+                      .bodySmall,
+            ),
+
+            const SizedBox(height: 10),
+
+            _buildRangeSlider(
+              title: 'Мягкость края',
+              value: softness,
+              min: 0,
+              max: 100,
+              divisions: 100,
+              suffix:
+                  '${softness.round()}%',
+              onChanged:
+                  processing
+                      ? null
+                      : (value) {
+                          setState(() {
+                            softness =
+                                value;
+                          });
+                        },
+              onChangeEnd:
+                  processing ||
+                          selectedColor ==
+                              null
+                      ? null
+                      : (_) {
+                          _selectionSettingsChanged();
+                        },
+            ),
+
+            const SizedBox(height: 6),
+
+            SwitchListTile(
+              contentPadding:
+                  EdgeInsets.zero,
+              title: const Text(
+                'Только связанная область',
+              ),
+              subtitle: const Text(
+                'Выбирает область, связанную '
+                'с точкой нажатия',
+              ),
+              value: connectedOnly,
+              onChanged:
+                  processing ||
+                          selectedColor ==
+                              null
+                      ? null
+                      : (value) {
+                          setState(() {
+                            connectedOnly =
+                                value;
+                          });
+
+                          _selectionSettingsChanged();
+                        },
+            ),
+
+            const SizedBox(height: 4),
+
+            Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed:
+                        mask == null
+                            ? null
+                            : _toggleMask,
+                    icon: Icon(
+                      showMask
+                          ? Icons.visibility_off
+                          : Icons.visibility,
+                    ),
+                    label: Text(
+                      showMask
+                          ? 'Скрыть маску'
+                          : 'Показать маску',
+                    ),
+                  ),
+                ),
+              ],
+            ),
+
+            const SizedBox(height: 8),
+
+            Text(
+              _maskDescription(),
+              style:
+                  Theme.of(context)
+                      .textTheme
+                      .bodySmall,
+            ),
+          ],
+        ),
       ),
     );
   }
 
   // ============================================================
-  // EMPTY PREVIEW
+  // RANGE SLIDER
   // ============================================================
 
-  Widget _buildEmptyPreview() {
-    return const Center(
-      child: Column(
-        mainAxisSize:
-            MainAxisSize.min,
-        children: [
-          Icon(
-            Icons.image_outlined,
-            size: 64,
-          ),
-          SizedBox(
-            height: 12,
-          ),
-          Text(
-            'Изображение не загружено',
-          ),
-          SizedBox(
-            height: 6,
-          ),
-          Text(
-            'Нажмите «Открыть»',
-          ),
-        ],
-      ),
-    );
-  }
-
-  // ============================================================
-  // PREVIEW TOOLBAR
-  // ============================================================
-
-  Widget _buildPreviewToolbar() {
-    final image =
-        showBefore
-            ? originalImage
-            : processedImage;
-
-    return Container(
-      padding:
-          const EdgeInsets.symmetric(
-        horizontal: 10,
-        vertical: 8,
-      ),
-      child: Row(
-        children: [
-          const Icon(
-            Icons.preview,
-            size: 20,
-          ),
-          const SizedBox(
-            width: 8,
-          ),
-          Expanded(
-            child: Text(
-              showBefore
-                  ? 'До коррекции'
-                  : 'После коррекции',
-              style: const TextStyle(
-                fontWeight:
-                    FontWeight.w600,
+  Widget _buildRangeSlider({
+    required String title,
+    required double value,
+    required double min,
+    required double max,
+    required int divisions,
+    required String suffix,
+    required ValueChanged<double>?
+        onChanged,
+    required ValueChanged<double>?
+        onChangeEnd,
+  }) {
+    return Column(
+      crossAxisAlignment:
+          CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Expanded(
+              child: Text(
+                title,
+                style:
+                    const TextStyle(
+                  fontWeight:
+                      FontWeight.w600,
+                ),
               ),
             ),
-          ),
-          if (image != null)
             Text(
-              '${image.width} × ${image.height}',
-              style: Theme.of(context)
-                  .textTheme
-                  .bodySmall,
+              suffix,
+              style:
+                  const TextStyle(
+                fontWeight:
+                    FontWeight.bold,
+              ),
             ),
-        ],
+          ],
+        ),
+        Slider(
+          value: value.clamp(
+            min,
+            max,
+          ),
+          min: min,
+          max: max,
+          divisions: divisions,
+          onChanged: onChanged,
+          onChangeEnd: onChangeEnd,
+        ),
+      ],
+    );
+  }
+
+  // ============================================================
+  // CMYK PANEL
+  // ============================================================
+
+  Widget _buildCmykPanel() {
+    return Card(
+      margin:
+          const EdgeInsets.symmetric(
+        horizontal: 12,
+        vertical: 6,
+      ),
+      child: Padding(
+        padding:
+            const EdgeInsets.all(14),
+        child: Column(
+          crossAxisAlignment:
+              CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                const Icon(
+                  Icons.palette,
+                ),
+                const SizedBox(width: 8),
+                const Expanded(
+                  child: Text(
+                    'CMYK-коррекция',
+                    style: TextStyle(
+                      fontSize: 17,
+                      fontWeight:
+                          FontWeight.bold,
+                    ),
+                  ),
+                ),
+                TextButton(
+                  onPressed:
+                      processing
+                          ? null
+                          : _resetCmyk,
+                  child:
+                      const Text('Сброс'),
+                ),
+              ],
+            ),
+
+            const SizedBox(height: 6),
+
+            _buildCmykSlider(
+              label: 'C',
+              value:
+                  correction.cyan,
+              onChanged:
+                  processing
+                      ? null
+                      : _setCyan,
+            ),
+
+            _buildCmykSlider(
+              label: 'M',
+              value:
+                  correction.magenta,
+              onChanged:
+                  processing
+                      ? null
+                      : _setMagenta,
+            ),
+
+            _buildCmykSlider(
+              label: 'Y',
+              value:
+                  correction.yellow,
+              onChanged:
+                  processing
+                      ? null
+                      : _setYellow,
+            ),
+
+            _buildCmykSlider(
+              label: 'K',
+              value:
+                  correction.black,
+              onChanged:
+                  processing
+                      ? null
+                      : _setBlack,
+            ),
+
+            const SizedBox(height: 8),
+
+            SizedBox(
+              width: double.infinity,
+              child: FilledButton.icon(
+                onPressed:
+                    !_canEdit() ||
+                            mask == null
+                        ? null
+                        : _applyCmyk,
+                icon: const Icon(
+                  Icons.check,
+                ),
+                label: const Text(
+                  'Применить CMYK',
+                ),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
 
   // ============================================================
-  // INTERACTIVE IMAGE
+  // CMYK SLIDER
   // ============================================================
 
-  Widget _buildInteractiveImage(
+  Widget _buildCmykSlider({
+    required String label,
+    required double value,
+    required ValueChanged<double>?
+        onChanged,
+  }) {
+    return Row(
+      children: [
+        SizedBox(
+          width: 28,
+          child: Text(
+            label,
+            style:
+                const TextStyle(
+              fontWeight:
+                  FontWeight.bold,
+            ),
+          ),
+        ),
+        Expanded(
+          child: Slider(
+            value: value.clamp(
+              -100,
+              100,
+            ),
+            min: -100,
+            max: 100,
+            divisions: 200,
+            label:
+                value.round().toString(),
+            onChanged: onChanged,
+          ),
+        ),
+        SizedBox(
+          width: 42,
+          child: Text(
+            value.round().toString(),
+            textAlign:
+                TextAlign.end,
+          ),
+        ),
+      ],
+    );
+  }
+
+  // ============================================================
+  // GLOBAL CORRECTION PANEL
+  // ============================================================
+
+  Widget _buildGlobalPanel() {
+    return Card(
+      margin:
+          const EdgeInsets.symmetric(
+        horizontal: 12,
+        vertical: 6,
+      ),
+      child: Padding(
+        padding:
+            const EdgeInsets.all(14),
+        child: Column(
+          crossAxisAlignment:
+              CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                const Icon(
+                  Icons.tune,
+                ),
+                const SizedBox(width: 8),
+                const Expanded(
+                  child: Text(
+                    'Общая коррекция',
+                    style: TextStyle(
+                      fontSize: 17,
+                      fontWeight:
+                          FontWeight.bold,
+                    ),
+                  ),
+                ),
+                TextButton(
+                  onPressed:
+                      processing
+                          ? null
+                          : _resetGlobal,
+                  child:
+                      const Text('Сброс'),
+                ),
+              ],
+            ),
+
+            const SizedBox(height: 6),
+
+            _buildGlobalSlider(
+              label: 'Яркость',
+              value:
+                  brightness,
+              onChanged:
+                  processing
+                      ? null
+                      : _setBrightness,
+            ),
+
+            _buildGlobalSlider(
+              label: 'Контраст',
+              value:
+                  contrast,
+              onChanged:
+                  processing
+                      ? null
+                      : _setContrast,
+            ),
+
+            _buildGlobalSlider(
+              label: 'Насыщенность',
+              value:
+                  saturation,
+              onChanged:
+                  processing
+                      ? null
+                      : _setSaturation,
+            ),
+
+            const SizedBox(height: 8),
+
+            SizedBox(
+              width: double.infinity,
+              child: FilledButton.icon(
+                onPressed:
+                    !_canEdit()
+                        ? null
+                        : _applyGlobalCorrections,
+                icon: const Icon(
+                  Icons.auto_fix_high,
+                ),
+                label: const Text(
+                  'Применить общую коррекцию',
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // ============================================================
+  // GLOBAL SLIDER
+  // ============================================================
+
+  Widget _buildGlobalSlider({
+    required String label,
+    required double value,
+    required ValueChanged<double>?
+        onChanged,
+  }) {
+    return Row(
+      children: [
+        SizedBox(
+          width: 92,
+          child: Text(label),
+        ),
+        Expanded(
+          child: Slider(
+            value: value.clamp(
+              -100,
+              100,
+            ),
+            min: -100,
+            max: 100,
+            divisions: 200,
+            label:
+                value.round().toString(),
+            onChanged: onChanged,
+          ),
+        ),
+        SizedBox(
+          width: 42,
+          child: Text(
+            value.round().toString(),
+            textAlign:
+                TextAlign.end,
+          ),
+        ),
+      ],
+    );
+  }
+    // ============================================================
+  // PREVIEW CONTROLS
+  // ============================================================
+
+  Widget _buildPreviewControls() {
+    return Card(
+      margin: const EdgeInsets.all(12),
+      child: Padding(
+        padding: const EdgeInsets.all(14),
+        child: Column(
+          crossAxisAlignment:
+              CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                const Icon(
+                  Icons.compare,
+                ),
+                const SizedBox(width: 8),
+                const Expanded(
+                  child: Text(
+                    'Предпросмотр',
+                    style: TextStyle(
+                      fontSize: 17,
+                      fontWeight:
+                          FontWeight.bold,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+
+            const SizedBox(height: 10),
+
+            Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed:
+                        originalImage == null ||
+                                processedImage == null
+                            ? null
+                            : _toggleBeforeAfter,
+                    icon: Icon(
+                      showBefore
+                          ? Icons.visibility
+                          : Icons.compare_arrows,
+                    ),
+                    label: Text(
+                      showBefore
+                          ? 'Показать результат'
+                          : 'Показать До',
+                    ),
+                  ),
+                ),
+              ],
+            ),
+
+            const SizedBox(height: 8),
+
+            Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed:
+                        mask == null
+                            ? null
+                            : _toggleMask,
+                    icon: Icon(
+                      showMask
+                          ? Icons.layers_clear
+                          : Icons.layers,
+                    ),
+                    label: Text(
+                      showMask
+                          ? 'Скрыть маску'
+                          : 'Показать маску',
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // ============================================================
+  // IMAGE PREVIEW
+  // ============================================================
+
+  Widget _buildImagePreview() {
+    final original =
+        originalImage;
+
+    final processed =
+        processedImage;
+
+    if (original == null ||
+        processed == null) {
+      return const Center(
+        child: Text(
+          'Изображение отсутствует',
+        ),
+      );
+    }
+
+    final displayImage =
+        showBefore
+            ? original
+            : processed;
+
+    return LayoutBuilder(
+      builder:
+          (context, constraints) {
+        return GestureDetector(
+          behavior:
+              HitTestBehavior.opaque,
+          onTapDown:
+              processing
+                  ? null
+                  : (details) {
+                      final point =
+                          _screenToImage(
+                        details.localPosition,
+                        Size(
+                          constraints.maxWidth,
+                          constraints.maxHeight,
+                        ),
+                        displayImage,
+                      );
+
+                      final valid =
+                          _validImagePoint(
+                        point,
+                        displayImage,
+                      );
+
+                      if (valid == null) {
+                        return;
+                      }
+
+                      _pickColor(
+                        valid.dx.floor(),
+                        valid.dy.floor(),
+                      );
+                    },
+          child: Stack(
+            fit: StackFit.expand,
+            children: [
+              InteractiveViewer(
+                minScale: 0.25,
+                maxScale: 8.0,
+                boundaryMargin:
+                    const EdgeInsets.all(
+                  40,
+                ),
+                child: Center(
+                  child: AspectRatio(
+                    aspectRatio:
+                        displayImage.width /
+                            displayImage.height,
+                    child: _buildImageWithMask(
+                      displayImage,
+                    ),
+                  ),
+                ),
+              ),
+
+              if (selectedX != null &&
+                  selectedY != null &&
+                  !showBefore)
+                _buildSelectionMarker(
+                  displayImage,
+                  constraints,
+                ),
+
+              Positioned(
+                left: 12,
+                top: 12,
+                child: _buildPreviewBadge(
+                  showBefore
+                      ? 'ДО'
+                      : 'ПОСЛЕ',
+                ),
+              ),
+
+              if (processing)
+                Positioned.fill(
+                  child: Container(
+                    color: Colors.black54,
+                    child: const Center(
+                      child:
+                          CircularProgressIndicator(),
+                    ),
+                  ),
+                ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  // ============================================================
+  // IMAGE + MASK
+  // ============================================================
+
+  Widget _buildImageWithMask(
     img.Image image,
   ) {
-    final imageBytes =
+    final png =
         Uint8List.fromList(
       img.encodePng(image),
     );
 
-    return LayoutBuilder(
-      builder: (
-        context,
-        constraints,
-      ) {
-        final maxWidth =
-            constraints.maxWidth;
+    final imageWidget =
+        Image.memory(
+      png,
+      fit: BoxFit.contain,
+      filterQuality:
+          FilterQuality.high,
+      gaplessPlayback: true,
+    );
 
-        final maxHeight =
-            constraints.maxHeight;
+    if (!showMask ||
+        mask == null ||
+        showBefore) {
+      return imageWidget;
+    }
 
-        if (maxWidth <= 0 ||
-            maxHeight <= 0) {
-          return const SizedBox();
-        }
-
-        final imageRatio =
-            image.width /
-                image.height;
-
-        final containerRatio =
-            maxWidth /
-                maxHeight;
-
-        late double displayWidth;
-        late double displayHeight;
-
-        if (imageRatio >
-            containerRatio) {
-          displayWidth =
-              maxWidth;
-
-          displayHeight =
-              maxWidth /
-                  imageRatio;
-        } else {
-          displayHeight =
-              maxHeight;
-
-          displayWidth =
-              maxHeight *
-                  imageRatio;
-        }
-
-        final displaySize =
-            Size(
-          displayWidth,
-          displayHeight,
-        );
-
-        return Center(
-          child: GestureDetector(
-            behavior:
-                HitTestBehavior.opaque,
-            onTapUp: (details) async {
-              if (showBefore ||
-                  processing) {
-                return;
-              }
-
-              final point =
-                  _imagePointFromLocalPosition(
-                details.localPosition,
-                displaySize,
-              );
-
-              if (point == null) {
-                return;
-              }
-
-              await _pickColorAt(
-                point.dx.round(),
-                point.dy.round(),
-              );
-            },
-            child: SizedBox(
-              width:
-                  displayWidth,
-              height:
-                  displayHeight,
-              child: Stack(
-                fit:
-                    StackFit.expand,
-                children: [
-                  Image.memory(
-                    imageBytes,
-                    fit:
-                        BoxFit.fill,
-                    filterQuality:
-                        FilterQuality.high,
-                  ),
-
-                  if (showMask &&
-                      !showBefore &&
-                      mask != null)
-                    _buildMaskOverlay(
-                      displaySize,
-                    ),
-
-                  if (!showBefore &&
-                      selectedX != null &&
-                      selectedY != null)
-                    _buildSelectionPoint(
-                      displaySize,
-                    ),
-                ],
-              ),
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        imageWidget,
+        IgnorePointer(
+          child:
+              CustomPaint(
+            painter:
+                _MaskPainter(
+              mask: mask!,
             ),
           ),
-        );
-      },
+        ),
+      ],
     );
   }
 
   // ============================================================
-  // SELECTION POINT
+  // SELECTION MARKER
   // ============================================================
 
-  Widget _buildSelectionPoint(
-    Size displaySize,
+  Widget _buildSelectionMarker(
+    img.Image image,
+    BoxConstraints constraints,
   ) {
-    final image =
-        originalImage;
-
-    if (image == null ||
-        selectedX == null ||
+    if (selectedX == null ||
         selectedY == null) {
-      return const SizedBox();
+      return const SizedBox
+          .shrink();
     }
 
+    final imageRatio =
+        image.width /
+            image.height;
+
+    final displayRatio =
+        constraints.maxWidth /
+            constraints.maxHeight;
+
+    double width;
+    double height;
+
+    if (imageRatio >
+        displayRatio) {
+      width =
+          constraints.maxWidth;
+
+      height =
+          width / imageRatio;
+    } else {
+      height =
+          constraints.maxHeight;
+
+      width =
+          height * imageRatio;
+    }
+
+    final left =
+        (constraints.maxWidth -
+                width) /
+            2;
+
+    final top =
+        (constraints.maxHeight -
+                height) /
+            2;
+
     final x =
-        selectedX! /
-            image.width *
-            displaySize.width;
+        left +
+        selectedX! *
+            width /
+            image.width;
 
     final y =
-        selectedY! /
-            image.height *
-            displaySize.height;
+        top +
+        selectedY! *
+            height /
+            image.height;
 
     return Positioned(
       left:
-          x - 10,
+          (x - 9).clamp(
+        0.0,
+        math.max(
+          0.0,
+          constraints.maxWidth - 18,
+        ),
+      ),
       top:
-          y - 10,
+          (y - 9).clamp(
+        0.0,
+        math.max(
+          0.0,
+          constraints.maxHeight - 18,
+        ),
+      ),
       child: IgnorePointer(
         child: Container(
-          width: 20,
-          height: 20,
+          width: 18,
+          height: 18,
           decoration:
               BoxDecoration(
             shape:
                 BoxShape.circle,
             border: Border.all(
+              color: Colors.white,
               width: 2,
-              color:
-                  Colors.white,
             ),
             boxShadow: const [
               BoxShadow(
                 blurRadius: 4,
-                spreadRadius: 1,
-                color:
-                    Colors.black,
               ),
             ],
           ),
@@ -1449,143 +2064,107 @@ class _EditorPageState extends State<EditorPage> {
   }
 
   // ============================================================
-  // MASK OVERLAY
+  // PREVIEW BADGE
   // ============================================================
 
-  Widget _buildMaskOverlay(
-    Size displaySize,
+  Widget _buildPreviewBadge(
+    String text,
   ) {
-    final currentMask =
-        mask;
-
-    if (currentMask == null) {
-      return const SizedBox();
-    }
-
-    final width =
-        currentMask.width;
-
-    final height =
-        currentMask.height;
-
-    if (width <= 0 ||
-        height <= 0) {
-      return const SizedBox();
-    }
-
-    final bytes =
-        Uint8List(
-      width *
-          height *
-          4,
-    );
-
-    var offset = 0;
-
-    for (var i = 0;
-        i < currentMask.values.length;
-        i++) {
-      final value =
-          currentMask.values[i];
-
-      if (value == 0) {
-        bytes[offset++] = 0;
-        bytes[offset++] = 0;
-        bytes[offset++] = 0;
-        bytes[offset++] = 0;
-        continue;
-      }
-
-      bytes[offset++] = 255;
-      bytes[offset++] = 0;
-      bytes[offset++] = 0;
-      bytes[offset++] =
-          (value * 0.35).round().clamp(
-                0,
-                255,
-              );
-    }
-
-    final overlay =
-        img.Image.fromBytes(
-      width: width,
-      height: height,
-      bytes: bytes.buffer,
-      numChannels: 4,
-      order: img.ChannelOrder.rgba,
-    );
-
-    final overlayBytes =
-        Uint8List.fromList(
-      img.encodePng(
-        overlay,
+    return Container(
+      padding:
+          const EdgeInsets.symmetric(
+        horizontal: 10,
+        vertical: 6,
       ),
-    );
-
-    return IgnorePointer(
-      child: Image.memory(
-        overlayBytes,
-        width:
-            displaySize.width,
-        height:
-            displaySize.height,
-        fit:
-            BoxFit.fill,
-        filterQuality:
-            FilterQuality.low,
+      decoration:
+          BoxDecoration(
+        color: Colors.black87,
+        borderRadius:
+            BorderRadius.circular(
+          8,
+        ),
+      ),
+      child: Text(
+        text,
+        style:
+            const TextStyle(
+          fontWeight:
+              FontWeight.bold,
+          fontSize: 12,
+        ),
       ),
     );
   }
 
   // ============================================================
-  // PREVIEW STATUS
+  // MAIN IMAGE AREA
   // ============================================================
 
-  Widget _buildPreviewStatus() {
+  Widget _buildImageArea() {
+    return Container(
+      width: double.infinity,
+      height: double.infinity,
+      color: Colors.black,
+      child: _buildImagePreview(),
+    );
+  }
+
+  // ============================================================
+  // EDITOR INFORMATION
+  // ============================================================
+
+  Widget _buildEditorInfo() {
+    final image =
+        processedImage ??
+            originalImage;
+
+    if (image == null) {
+      return const SizedBox
+          .shrink();
+    }
+
+    final color =
+        selectedColor;
+
+    final currentMask =
+        mask;
+
     return Container(
       width: double.infinity,
       padding:
           const EdgeInsets.symmetric(
-        horizontal: 10,
-        vertical: 7,
+        horizontal: 12,
+        vertical: 8,
       ),
-      child: Row(
+      decoration:
+          const BoxDecoration(
+        color: Colors.black87,
+      ),
+      child: Wrap(
+        spacing: 14,
+        runSpacing: 5,
         children: [
-          if (processing)
-            const SizedBox(
-              width: 16,
-              height: 16,
-              child:
-                  CircularProgressIndicator(
-                strokeWidth: 2,
-              ),
-            )
-          else
-            const Icon(
-              Icons.check_circle_outline,
-              size: 17,
-            ),
-
-          const SizedBox(
-            width: 8,
+          _infoItem(
+            Icons.photo_size_select_large,
+            '${image.width} × ${image.height}',
           ),
-
-          Expanded(
-            child: Text(
-              statusMessage,
-              maxLines: 2,
-              overflow:
-                  TextOverflow.ellipsis,
-            ),
+          _infoItem(
+            Icons.palette_outlined,
+            color == null
+                ? 'Цвет не выбран'
+                : color.hex,
           ),
-
-          if (mask != null)
-            Text(
-              '${mask!.selectedPercentage.toStringAsFixed(1)}%',
-              style: const TextStyle(
-                fontWeight:
-                    FontWeight.bold,
-              ),
+          _infoItem(
+            Icons.select_all,
+            currentMask == null
+                ? 'Маска: —'
+                : 'Маска: '
+                    '${currentMask.selectedPercentage.toStringAsFixed(2)}%',
+          ),
+          if (openedFileName != null)
+            _infoItem(
+              Icons.insert_drive_file,
+              openedFileName!,
             ),
         ],
       ),
@@ -1593,80 +2172,152 @@ class _EditorPageState extends State<EditorPage> {
   }
 
   // ============================================================
-  // BEFORE / AFTER BUTTON
+  // INFO ITEM
   // ============================================================
 
-  Widget _buildBeforeAfterButton() {
-    return OutlinedButton.icon(
-      onPressed:
-          originalImage == null ||
-                  processing
-              ? null
-              : () {
-                  setState(() {
-                    showBefore =
-                        !showBefore;
-                  });
-                },
-      icon: const Icon(
-        Icons.compare,
-      ),
-      label: Text(
-        showBefore
-            ? 'Показать после'
-            : 'Показать до',
-      ),
+  Widget _infoItem(
+    IconData icon,
+    String value,
+  ) {
+    return Row(
+      mainAxisSize:
+          MainAxisSize.min,
+      children: [
+        Icon(
+          icon,
+          size: 15,
+        ),
+        const SizedBox(width: 5),
+        Text(
+          value,
+          style:
+              const TextStyle(
+            fontSize: 12,
+          ),
+        ),
+      ],
     );
   }
-
+    // ============================================================
+  // TOOLBAR
   // ============================================================
-  // EDITOR LAYOUT
-  // ============================================================
 
-  Widget _buildEditorLayout() {
-    return LayoutBuilder(
-      builder: (
-        context,
-        constraints,
-      ) {
-        if (constraints.maxWidth >=
-            900) {
-          return Row(
+  Widget _buildToolbar() {
+    return Material(
+      elevation: 4,
+      child: SafeArea(
+        bottom: false,
+        child: Container(
+          padding:
+              const EdgeInsets.symmetric(
+            horizontal: 8,
+            vertical: 6,
+          ),
+          child: Row(
             children: [
-              Expanded(
-                child:
-                    _buildPreviewPanel(),
+              IconButton(
+                tooltip: 'Открыть изображение',
+                onPressed:
+                    processing
+                        ? null
+                        : _openImage,
+                icon: const Icon(
+                  Icons.folder_open,
+                ),
               ),
+
+              IconButton(
+                tooltip: 'Сохранить проект',
+                onPressed:
+                    originalImage == null ||
+                            processing
+                        ? null
+                        : _saveProject,
+                icon: const Icon(
+                  Icons.save,
+                ),
+              ),
+
+              IconButton(
+                tooltip: 'Экспорт изображения',
+                onPressed:
+                    processedImage == null ||
+                            processing
+                        ? null
+                        : _exportImage,
+                icon: const Icon(
+                  Icons.download,
+                ),
+              ),
+
               const SizedBox(
-                width: 8,
+                width: 4,
               ),
-              SizedBox(
-                width: 390,
-                child:
-                    _buildControlsPanel(),
+
+              Container(
+                width: 1,
+                height: 28,
+                color:
+                    Theme.of(context)
+                        .dividerColor,
+              ),
+
+              const SizedBox(
+                width: 4,
+              ),
+
+              IconButton(
+                tooltip: 'Отменить',
+                onPressed:
+                    historyIndex > 0 &&
+                            !processing
+                        ? _undo
+                        : null,
+                icon: const Icon(
+                  Icons.undo,
+                ),
+              ),
+
+              IconButton(
+                tooltip: 'Повторить',
+                onPressed:
+                    historyIndex >= 0 &&
+                            historyIndex <
+                                history.length - 1 &&
+                            !processing
+                        ? _redo
+                        : null,
+                icon: const Icon(
+                  Icons.redo,
+                ),
+              ),
+
+              const Spacer(),
+
+              IconButton(
+                tooltip: 'Справка',
+                onPressed:
+                    _showHelp,
+                icon: const Icon(
+                  Icons.help_outline,
+                ),
+              ),
+
+              IconButton(
+                tooltip: 'Сбросить редактор',
+                onPressed:
+                    originalImage == null ||
+                            processing
+                        ? null
+                        : _resetAll,
+                icon: const Icon(
+                  Icons.restart_alt,
+                ),
               ),
             ],
-          );
-        }
-
-        return Column(
-          children: [
-            Expanded(
-              flex: 5,
-              child:
-                  _buildPreviewPanel(),
-            ),
-            const SizedBox(
-              height: 8,
-            ),
-            Expanded(
-              flex: 6,
-              child:
-                  _buildControlsPanel(),
-            ),
-          ],
-        );
-      },
+          ),
+        ),
+      ),
     );
   }
 
@@ -1683,33 +2334,43 @@ class _EditorPageState extends State<EditorPage> {
           mainAxisAlignment:
               MainAxisAlignment.center,
           children: [
-            const Icon(
+            Icon(
               Icons.palette_outlined,
-              size: 90,
+              size: 82,
+              color:
+                  Theme.of(context)
+                      .colorScheme
+                      .primary,
             ),
 
             const SizedBox(
-              height: 20,
+              height: 18,
             ),
 
             const Text(
               'Print Color App',
+              textAlign:
+                  TextAlign.center,
               style: TextStyle(
-                fontSize: 28,
+                fontSize: 26,
                 fontWeight:
                     FontWeight.bold,
               ),
             ),
 
             const SizedBox(
-              height: 10,
+              height: 8,
             ),
 
-            const Text(
-              'CMYK коррекция цветов '
-              'для печатных изображений',
+            Text(
+              'Профессиональная коррекция '
+              'цвета для печатного процесса',
               textAlign:
                   TextAlign.center,
+              style:
+                  Theme.of(context)
+                      .textTheme
+                      .bodyLarge,
             ),
 
             const SizedBox(
@@ -1730,885 +2391,373 @@ class _EditorPageState extends State<EditorPage> {
             ),
 
             const SizedBox(
-              height: 12,
+              height: 20,
             ),
 
-            OutlinedButton.icon(
-              onPressed:
-                  _showHelp,
-              icon: const Icon(
-                Icons.help_outline,
+            const Text(
+              'Поддерживаются PNG, JPG, JPEG, '
+              'WEBP, BMP, GIF, TIFF.',
+              textAlign:
+                  TextAlign.center,
+              style: TextStyle(
+                fontSize: 12,
               ),
-              label:
-                  const Text('Как работать'),
             ),
           ],
         ),
       ),
     );
-  }  // ============================================================
-  // SELECTION SECTION
+  }
+
+  // ============================================================
+  // STATUS BAR
   // ============================================================
 
-  Widget _buildSelectionSection() {
-    final color = selectedColor;
-
-    return ExpansionTile(
-      initiallyExpanded: true,
-      leading: const Icon(
-        Icons.colorize,
+  Widget _buildStatusBar() {
+    return Container(
+      width: double.infinity,
+      padding:
+          const EdgeInsets.symmetric(
+        horizontal: 12,
+        vertical: 8,
       ),
-      title: const Text(
-        'Выбор цвета',
+      decoration:
+          BoxDecoration(
+        color:
+            Theme.of(context)
+                .colorScheme
+                .surfaceContainerHighest,
+        border: Border(
+          top: BorderSide(
+            color:
+                Theme.of(context)
+                    .dividerColor,
+          ),
+        ),
       ),
-      childrenPadding:
-          const EdgeInsets.fromLTRB(
-        16,
-        0,
-        16,
-        16,
-      ),
-      children: [
-        if (color == null)
-          Container(
-            width: double.infinity,
-            padding:
-                const EdgeInsets.all(12),
-            decoration: BoxDecoration(
-              borderRadius:
-                  BorderRadius.circular(10),
-              border: Border.all(
-                color: Theme.of(context)
-                    .colorScheme
-                    .outline,
+      child: Row(
+        children: [
+          if (processing)
+            const SizedBox(
+              width: 14,
+              height: 14,
+              child:
+                  CircularProgressIndicator(
+                strokeWidth: 2,
               ),
             ),
-            child: const Text(
-              'Нажмите на нужный цвет '
-              'непосредственно на изображении.',
+
+          if (processing)
+            const SizedBox(
+              width: 8,
             ),
-          )
-        else
-          Row(
-            children: [
-              Container(
-                width: 48,
-                height: 48,
-                decoration:
-                    BoxDecoration(
-                  color: Color.fromARGB(
-                    255,
-                    color.r,
-                    color.g,
-                    color.b,
-                  ),
-                  borderRadius:
-                      BorderRadius.circular(
-                    8,
-                  ),
-                  border: Border.all(
-                    color: Colors.white54,
-                  ),
+
+          Expanded(
+            child: Text(
+              statusMessage,
+              maxLines: 2,
+              overflow:
+                  TextOverflow.ellipsis,
+              style:
+                  Theme.of(context)
+                      .textTheme
+                      .bodySmall,
+            ),
+          ),
+
+          if (selectedColor != null)
+            Container(
+              width: 12,
+              height: 12,
+              decoration:
+                  BoxDecoration(
+                color:
+                    Color.fromARGB(
+                  255,
+                  selectedColor!.r,
+                  selectedColor!.g,
+                  selectedColor!.b,
+                ),
+                shape:
+                    BoxShape.circle,
+                border:
+                    Border.all(
+                  color:
+                      Colors.white,
                 ),
               ),
-              const SizedBox(
-                width: 12,
-              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  // ============================================================
+  // CONTROLS PANEL
+  // ============================================================
+
+  Widget _buildControlsPanel() {
+    return SingleChildScrollView(
+      padding:
+          const EdgeInsets.only(
+        top: 4,
+        bottom: 16,
+      ),
+      child: Column(
+        children: [
+          _buildSelectionPanel(),
+          _buildCmykPanel(),
+          _buildGlobalPanel(),
+          _buildPreviewControls(),
+        ],
+      ),
+    );
+  }
+
+  // ============================================================
+  // DESKTOP LAYOUT
+  // ============================================================
+
+  Widget _buildDesktopLayout(
+    BoxConstraints constraints,
+  ) {
+    final panelWidth =
+        math.min(
+      430.0,
+      math.max(
+        340.0,
+        constraints.maxWidth *
+            0.30,
+      ),
+    );
+
+    return Column(
+      children: [
+        _buildToolbar(),
+        Expanded(
+          child: Row(
+            children: [
               Expanded(
                 child: Column(
-                  crossAxisAlignment:
-                      CrossAxisAlignment.start,
                   children: [
-                    const Text(
-                      'Выбранный цвет',
-                      style: TextStyle(
-                        fontWeight:
-                            FontWeight.w600,
-                      ),
+                    Expanded(
+                      child:
+                          _buildImageArea(),
                     ),
-                    const SizedBox(
-                      height: 3,
-                    ),
-                    Text(
-                      color.hex,
-                      style:
-                          const TextStyle(
-                        fontFamily:
-                            'monospace',
-                      ),
-                    ),
+                    _buildEditorInfo(),
                   ],
                 ),
               ),
-              IconButton(
-                tooltip:
-                    'Очистить выбор',
-                onPressed:
-                    processing
-                        ? null
-                        : _clearSelection,
-                icon: const Icon(
-                  Icons.clear,
-                ),
+
+              Container(
+                width: 1,
+                color:
+                    Theme.of(context)
+                        .dividerColor,
+              ),
+
+              SizedBox(
+                width: panelWidth,
+                child:
+                    _buildControlsPanel(),
               ),
             ],
           ),
-
-        const SizedBox(
-          height: 14,
         ),
-
-        _buildRangeSlider(
-          title: 'Диапазон',
-          value: tolerance,
-          min: 0,
-          max: 100,
-          divisions: 100,
-          valueLabel:
-              '${tolerance.round()}%',
-          onChanged:
-              processing
-                  ? null
-                  : (value) {
-                      setState(() {
-                        tolerance =
-                            value;
-                      });
-                    },
-          onChangeEnd:
-              processing
-                  ? null
-                  : (_) async {
-                      await _selectionSettingsChanged();
-                    },
-        ),
-
-        _buildRangeSlider(
-          title: 'Мягкость края',
-          value: softness,
-          min: 0,
-          max: 100,
-          divisions: 100,
-          valueLabel:
-              '${softness.round()}%',
-          onChanged:
-              processing
-                  ? null
-                  : (value) {
-                      setState(() {
-                        softness =
-                            value;
-                      });
-                    },
-          onChangeEnd:
-              processing
-                  ? null
-                  : (_) async {
-                      await _selectionSettingsChanged();
-                    },
-        ),
-
-        SwitchListTile(
-          contentPadding:
-              EdgeInsets.zero,
-          title: const Text(
-            'Связанная область',
-          ),
-          subtitle: const Text(
-            'Изменять только соседнюю '
-            'область выбранного цвета',
-          ),
-          value: connectedOnly,
-          onChanged:
-              processing
-                  ? null
-                  : (value) async {
-                      setState(() {
-                        connectedOnly =
-                            value;
-                      });
-
-                      await _selectionSettingsChanged();
-                    },
-        ),
-
-        const SizedBox(
-          height: 4,
-        ),
-
-        Row(
-          children: [
-            Expanded(
-              child: _buildBeforeAfterButton(),
-            ),
-            const SizedBox(
-              width: 8,
-            ),
-            Expanded(
-              child: OutlinedButton.icon(
-                onPressed:
-                    processing ||
-                            selectedColor ==
-                                null
-                        ? null
-                        : _generateMask,
-                icon: const Icon(
-                  Icons.refresh,
-                ),
-                label: const Text(
-                  'Обновить',
-                ),
-              ),
-            ),
-          ],
-        ),
+        _buildStatusBar(),
       ],
     );
   }
 
   // ============================================================
-  // CLEAR SELECTION
+  // MOBILE LAYOUT
   // ============================================================
 
-  Future<void> _clearSelection() async {
-    if (processing) {
-      return;
-    }
+  Widget _buildMobileLayout(
+    BoxConstraints constraints,
+  ) {
+    return Column(
+      children: [
+        _buildToolbar(),
 
-    setState(() {
-      selectedColor = null;
-      selectedX = null;
-      selectedY = null;
-      mask = null;
+        Expanded(
+          child: Column(
+            children: [
+              Expanded(
+                flex: 6,
+                child: _buildImageArea(),
+              ),
 
-      processedImage =
-          originalImage?.clone();
+              _buildEditorInfo(),
 
-      statusMessage =
-          'Выделение очищено';
-    });
+              Expanded(
+                flex: 5,
+                child:
+                    _buildControlsPanel(),
+              ),
+            ],
+          ),
+        ),
 
-    if (originalImage != null) {
-      await _addHistoryPoint(
-        'Очистка выделения',
+        _buildStatusBar(),
+      ],
+    );
+  }
+
+  // ============================================================
+  // RESPONSIVE EDITOR
+  // ============================================================
+
+  Widget _buildEditor(
+    BoxConstraints constraints,
+  ) {
+    final isDesktop =
+        constraints.maxWidth >= 900;
+
+    if (isDesktop) {
+      return _buildDesktopLayout(
+        constraints,
       );
     }
+
+    return _buildMobileLayout(
+      constraints,
+    );
   }
 
   // ============================================================
-  // SELECTION SETTINGS CHANGED
+  // MAIN BUILD
   // ============================================================
 
-  Future<void> _selectionSettingsChanged() async {
-    if (originalImage == null ||
-        selectedColor == null ||
-        processing) {
+  @override
+  Widget build(
+    BuildContext context,
+  ) {
+    return Scaffold(
+      body: SafeArea(
+        child: Focus(
+          focusNode: _editorFocus,
+          autofocus: true,
+          child: LayoutBuilder(
+            builder:
+                (
+              context,
+              constraints,
+            ) {
+              if (originalImage == null) {
+                return Column(
+                  children: [
+                    _buildToolbar(),
+                    Expanded(
+                      child:
+                          _buildEmptyState(),
+                    ),
+                    _buildStatusBar(),
+                  ],
+                );
+              }
+
+              return _buildEditor(
+                constraints,
+              );
+            },
+          ),
+        ),
+      ),
+    );
+  }
+    // ============================================================
+  // HISTORY
+  // ============================================================
+
+  Future<void> _addHistoryPoint(
+    String description,
+  ) async {
+    final image =
+        processedImage ??
+            originalImage;
+
+    if (image == null) {
       return;
     }
 
-    await _generateMask();
+    final snapshot =
+        _HistorySnapshot(
+      image: image.clone(),
+      description: description,
+      selectedColor:
+          selectedColor,
+      selectedX: selectedX,
+      selectedY: selectedY,
+      tolerance: tolerance,
+      softness: softness,
+      connectedOnly:
+          connectedOnly,
+      correction: correction,
+      brightness: brightness,
+      contrast: contrast,
+      saturation: saturation,
+    );
 
-    if (!mounted ||
-        mask == null) {
+    if (historyIndex <
+        history.length - 1) {
+      history.removeRange(
+        historyIndex + 1,
+        history.length,
+      );
+    }
+
+    history.add(snapshot);
+
+    historyIndex =
+        history.length - 1;
+
+    if (history.length > 30) {
+      history.removeAt(0);
+      historyIndex--;
+    }
+
+    if (mounted) {
+      setState(() {});
+    }
+  }
+
+  // ============================================================
+  // UNDO
+  // ============================================================
+
+  Future<void> _undo() async {
+    if (processing ||
+        historyIndex <= 0 ||
+        history.isEmpty) {
       return;
     }
 
-    await _processImage();
+    final targetIndex =
+        historyIndex - 1;
 
-    if (!mounted) {
+    await _restoreHistory(
+      targetIndex,
+    );
+  }
+
+  // ============================================================
+  // REDO
+  // ============================================================
+
+  Future<void> _redo() async {
+    if (processing ||
+        historyIndex < 0 ||
+        historyIndex >=
+            history.length - 1) {
       return;
     }
 
-    await _addHistoryPoint(
-      'Изменение выделения',
-    );
-  }
+    final targetIndex =
+        historyIndex + 1;
 
-  // ============================================================
-  // RANGE SLIDER
-  // ============================================================
-
-  Widget _buildRangeSlider({
-    required String title,
-    required double value,
-    required double min,
-    required double max,
-    required int divisions,
-    required String valueLabel,
-    required ValueChanged<double>?
-        onChanged,
-    required ValueChanged<double>?
-        onChangeEnd,
-  }) {
-    return Column(
-      crossAxisAlignment:
-          CrossAxisAlignment.start,
-      children: [
-        Row(
-          children: [
-            Expanded(
-              child: Text(
-                title,
-                style: const TextStyle(
-                  fontWeight:
-                      FontWeight.w500,
-                ),
-              ),
-            ),
-            Text(
-              valueLabel,
-              style: TextStyle(
-                color: Theme.of(context)
-                    .colorScheme
-                    .primary,
-                fontWeight:
-                    FontWeight.w600,
-              ),
-            ),
-          ],
-        ),
-        Slider(
-          value: value.clamp(
-            min,
-            max,
-          ),
-          min: min,
-          max: max,
-          divisions: divisions,
-          label: valueLabel,
-          onChanged: onChanged,
-          onChangeEnd: onChangeEnd,
-        ),
-      ],
-    );
-  }
-
-  // ============================================================
-  // CMYK SECTION
-  // ============================================================
-
-  Widget _buildCmykSection() {
-    return ExpansionTile(
-      initiallyExpanded: true,
-      leading: const Icon(
-        Icons.tune,
-      ),
-      title: const Text(
-        'CMYK коррекция',
-      ),
-      subtitle: Text(
-        _cmykSummary(),
-      ),
-      childrenPadding:
-          const EdgeInsets.fromLTRB(
-        16,
-        0,
-        16,
-        16,
-      ),
-      children: [
-        _buildCmykSlider(
-          label: 'Cyan',
-          value: correction.cyan,
-          onChanged:
-              processing
-                  ? null
-                  : (value) {
-                      setState(() {
-                        correction =
-                            correction.copyWith(
-                          cyan: value,
-                        );
-                      });
-                    },
-        ),
-
-        _buildCmykSlider(
-          label: 'Magenta',
-          value: correction.magenta,
-          onChanged:
-              processing
-                  ? null
-                  : (value) {
-                      setState(() {
-                        correction =
-                            correction.copyWith(
-                          magenta: value,
-                        );
-                      });
-                    },
-        ),
-
-        _buildCmykSlider(
-          label: 'Yellow',
-          value: correction.yellow,
-          onChanged:
-              processing
-                  ? null
-                  : (value) {
-                      setState(() {
-                        correction =
-                            correction.copyWith(
-                          yellow: value,
-                        );
-                      });
-                    },
-        ),
-
-        _buildCmykSlider(
-          label: 'Black',
-          value: correction.black,
-          onChanged:
-              processing
-                  ? null
-                  : (value) {
-                      setState(() {
-                        correction =
-                            correction.copyWith(
-                          black: value,
-                        );
-                      });
-                    },
-        ),
-
-        const SizedBox(
-          height: 8,
-        ),
-
-        Row(
-          children: [
-            Expanded(
-              child: FilledButton.icon(
-                onPressed:
-                    processing ||
-                            mask == null
-                        ? null
-                        : _applyCmykChanges,
-                icon: const Icon(
-                  Icons.check,
-                ),
-                label: const Text(
-                  'Применить CMYK',
-                ),
-              ),
-            ),
-            const SizedBox(
-              width: 8,
-            ),
-            OutlinedButton(
-              onPressed:
-                  processing
-                      ? null
-                      : _resetCmyk,
-              child:
-                  const Text('Сброс'),
-            ),
-          ],
-        ),
-      ],
-    );
-  }
-
-  // ============================================================
-  // CMYK SUMMARY
-  // ============================================================
-
-  String _cmykSummary() {
-    return 'C ${correction.cyan.round()}  '
-        'M ${correction.magenta.round()}  '
-        'Y ${correction.yellow.round()}  '
-        'K ${correction.black.round()}';
-  }
-
-  // ============================================================
-  // CMYK SLIDER
-  // ============================================================
-
-  Widget _buildCmykSlider({
-    required String label,
-    required double value,
-    required ValueChanged<double>?
-        onChanged,
-  }) {
-    return Column(
-      crossAxisAlignment:
-          CrossAxisAlignment.start,
-      children: [
-        Row(
-          children: [
-            Expanded(
-              child: Text(
-                label,
-                style: const TextStyle(
-                  fontWeight:
-                      FontWeight.w500,
-                ),
-              ),
-            ),
-            Text(
-              '${value >= 0 ? '+' : ''}'
-              '${value.round()}',
-              style: const TextStyle(
-                fontFamily:
-                    'monospace',
-                fontWeight:
-                    FontWeight.bold,
-              ),
-            ),
-          ],
-        ),
-        Slider(
-          value: value.clamp(
-            -100.0,
-            100.0,
-          ),
-          min: -100,
-          max: 100,
-          divisions: 200,
-          label:
-              value.round().toString(),
-          onChanged: onChanged,
-        ),
-      ],
-    );
-  }
-
-  // ============================================================
-  // GLOBAL SECTION
-  // ============================================================
-
-  Widget _buildGlobalSection() {
-    return ExpansionTile(
-      leading: const Icon(
-        Icons.auto_fix_high,
-      ),
-      title: const Text(
-        'Общая коррекция',
-      ),
-      subtitle: const Text(
-        'Применяется ко всему изображению',
-      ),
-      childrenPadding:
-          const EdgeInsets.fromLTRB(
-        16,
-        0,
-        16,
-        16,
-      ),
-      children: [
-        _buildGlobalSlider(
-          label: 'Яркость',
-          value: brightness,
-          onChanged:
-              processing
-                  ? null
-                  : (value) {
-                      setState(() {
-                        brightness =
-                            value;
-                      });
-                    },
-        ),
-
-        _buildGlobalSlider(
-          label: 'Контраст',
-          value: contrast,
-          onChanged:
-              processing
-                  ? null
-                  : (value) {
-                      setState(() {
-                        contrast =
-                            value;
-                      });
-                    },
-        ),
-
-        _buildGlobalSlider(
-          label: 'Насыщенность',
-          value: saturation,
-          onChanged:
-              processing
-                  ? null
-                  : (value) {
-                      setState(() {
-                        saturation =
-                            value;
-                      });
-                    },
-        ),
-
-        const SizedBox(
-          height: 8,
-        ),
-
-        Row(
-          children: [
-            Expanded(
-              child: FilledButton.icon(
-                onPressed:
-                    processing
-                        ? null
-                        : _applyGlobalChanges,
-                icon: const Icon(
-                  Icons.check,
-                ),
-                label: const Text(
-                  'Применить',
-                ),
-              ),
-            ),
-            const SizedBox(
-              width: 8,
-            ),
-            OutlinedButton(
-              onPressed:
-                  processing
-                      ? null
-                      : _resetGlobal,
-              child:
-                  const Text('Сброс'),
-            ),
-          ],
-        ),
-      ],
-    );
-  }
-
-  // ============================================================
-  // GLOBAL SLIDER
-  // ============================================================
-
-  Widget _buildGlobalSlider({
-    required String label,
-    required double value,
-    required ValueChanged<double>?
-        onChanged,
-  }) {
-    return Column(
-      crossAxisAlignment:
-          CrossAxisAlignment.start,
-      children: [
-        Row(
-          children: [
-            Expanded(
-              child: Text(
-                label,
-              ),
-            ),
-            Text(
-              '${value >= 0 ? '+' : ''}'
-              '${value.round()}',
-              style: const TextStyle(
-                fontFamily:
-                    'monospace',
-              ),
-            ),
-          ],
-        ),
-        Slider(
-          value: value.clamp(
-            -100.0,
-            100.0,
-          ),
-          min: -100,
-          max: 100,
-          divisions: 200,
-          label:
-              value.round().toString(),
-          onChanged: onChanged,
-        ),
-      ],
-    );
-  }
-
-  // ============================================================
-  // COMPARISON SECTION
-  // ============================================================
-
-  Widget _buildComparisonSection() {
-    return ExpansionTile(
-      leading: const Icon(
-        Icons.compare,
-      ),
-      title: const Text(
-        'Предпросмотр',
-      ),
-      childrenPadding:
-          const EdgeInsets.fromLTRB(
-        16,
-        0,
-        16,
-        16,
-      ),
-      children: [
-        Row(
-          children: [
-            Expanded(
-              child:
-                  _buildBeforeAfterButton(),
-            ),
-            const SizedBox(
-              width: 8,
-            ),
-            Expanded(
-              child: OutlinedButton.icon(
-                onPressed:
-                    originalImage ==
-                                null ||
-                            processing
-                        ? null
-                        : () {
-                            setState(() {
-                              showMask =
-                                  !showMask;
-                            });
-                          },
-                icon: Icon(
-                  showMask
-                      ? Icons.visibility
-                      : Icons.visibility_off,
-                ),
-                label: Text(
-                  showMask
-                      ? 'Маска'
-                      : 'Без маски',
-                ),
-              ),
-            ),
-          ],
-        ),
-      ],
-    );
-  }  // ============================================================
-  // HISTORY SECTION
-  // ============================================================
-
-  Widget _buildHistorySection() {
-    return ExpansionTile(
-      leading: const Icon(
-        Icons.history,
-      ),
-      title: const Text(
-        'История изменений',
-      ),
-      subtitle: Text(
-        history.isEmpty
-            ? 'Нет изменений'
-            : '${history.length} записей',
-      ),
-      childrenPadding:
-          const EdgeInsets.fromLTRB(
-        16,
-        0,
-        16,
-        16,
-      ),
-      children: [
-        if (history.isEmpty)
-          const Padding(
-            padding:
-                EdgeInsets.symmetric(
-              vertical: 12,
-            ),
-            child: Text(
-              'История появится после '
-              'изменения изображения.',
-            ),
-          )
-        else
-          Column(
-            children: [
-              ...List.generate(
-                history.length,
-                (index) {
-                  final item =
-                      history[index];
-
-                  final active =
-                      index ==
-                          historyIndex;
-
-                  return ListTile(
-                    dense: true,
-                    contentPadding:
-                        EdgeInsets.zero,
-                    selected: active,
-                    leading: Icon(
-                      active
-                          ? Icons
-                              .radio_button_checked
-                          : Icons
-                              .radio_button_unchecked,
-                    ),
-                    title: Text(
-                      item.label,
-                    ),
-                    subtitle: Text(
-                      item.time,
-                    ),
-                    onTap:
-                        processing
-                            ? null
-                            : () =>
-                                _restoreHistory(
-                                  index,
-                                ),
-                  );
-                },
-              ),
-
-              const SizedBox(
-                height: 8,
-              ),
-
-              Row(
-                children: [
-                  Expanded(
-                    child:
-                        OutlinedButton.icon(
-                      onPressed:
-                          processing ||
-                                  historyIndex <=
-                                      0
-                              ? null
-                              : _undo,
-                      icon: const Icon(
-                        Icons.undo,
-                      ),
-                      label:
-                          const Text(
-                        'Назад',
-                      ),
-                    ),
-                  ),
-                  const SizedBox(
-                    width: 8,
-                  ),
-                  Expanded(
-                    child:
-                        OutlinedButton.icon(
-                      onPressed:
-                          processing ||
-                                  historyIndex >=
-                                      history.length -
-                                          1
-                              ? null
-                              : _redo,
-                      icon: const Icon(
-                        Icons.redo,
-                      ),
-                      label:
-                          const Text(
-                        'Вперёд',
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ],
-          ),
-      ],
+    await _restoreHistory(
+      targetIndex,
     );
   }
 
@@ -2619,8 +2768,7 @@ class _EditorPageState extends State<EditorPage> {
   Future<void> _restoreHistory(
     int index,
   ) async {
-    if (processing ||
-        index < 0 ||
+    if (index < 0 ||
         index >= history.length) {
       return;
     }
@@ -2631,113 +2779,251 @@ class _EditorPageState extends State<EditorPage> {
     setState(() {
       processing = true;
       statusMessage =
-          'Восстановление истории...';
+          'Восстановление изменения...';
     });
 
-    await _smallDelay();
+    await Future<void>.delayed(
+      const Duration(
+        milliseconds: 10,
+      ),
+    );
 
-    try {
-      final restoredImage =
+    if (!mounted) {
+      return;
+    }
+
+    setState(() {
+      processedImage =
           snapshot.image.clone();
 
-      if (!mounted) {
-        return;
-      }
+      selectedColor =
+          snapshot.selectedColor;
 
+      selectedX =
+          snapshot.selectedX;
+
+      selectedY =
+          snapshot.selectedY;
+
+      tolerance =
+          snapshot.tolerance;
+
+      softness =
+          snapshot.softness;
+
+      connectedOnly =
+          snapshot.connectedOnly;
+
+      correction =
+          snapshot.correction;
+
+      brightness =
+          snapshot.brightness;
+
+      contrast =
+          snapshot.contrast;
+
+      saturation =
+          snapshot.saturation;
+
+      historyIndex =
+          index;
+
+      processing = false;
+
+      showBefore = false;
+
+      statusMessage =
+          'Восстановлено: '
+          '${snapshot.description}';
+    });
+
+    if (selectedColor != null &&
+        originalImage != null) {
+      await _generateSelection();
+    } else if (mounted) {
       setState(() {
-        processedImage =
-            restoredImage;
-
-        selectedColor =
-            snapshot.color;
-
-        selectedX =
-            snapshot.x;
-
-        selectedY =
-            snapshot.y;
-
-        tolerance =
-            snapshot.tolerance;
-
-        softness =
-            snapshot.softness;
-
-        connectedOnly =
-            snapshot.connectedOnly;
-
-        correction =
-            snapshot.correction;
-
-        brightness =
-            snapshot.brightness;
-
-        contrast =
-            snapshot.contrast;
-
-        saturation =
-            snapshot.saturation;
-
-        mask =
-            snapshot.mask?.copy();
-
-        historyIndex =
-            index;
-
-        processing = false;
-
-        statusMessage =
-            'Восстановлено: '
-            '${snapshot.label}';
-      });
-    } catch (e) {
-      if (!mounted) {
-        return;
-      }
-
-      setState(() {
-        processing = false;
-        statusMessage =
-            'Ошибка восстановления: $e';
+        mask = null;
       });
     }
   }
 
   // ============================================================
-  // PROJECT SAVE
+  // PROJECT DATA
+  // ============================================================
+
+  Map<String, dynamic> _projectJson() {
+    final color =
+        selectedColor;
+
+    return <String, dynamic>{
+      'format':
+          'print_color_app_project',
+      'version': 1,
+      'createdBy':
+          'Print Color App',
+
+      'source': <String, dynamic>{
+        'fileName':
+            openedFileName,
+        'filePath':
+            openedFilePath,
+      },
+
+      'selection':
+          <String, dynamic>{
+        'r': color?.r,
+        'g': color?.g,
+        'b': color?.b,
+        'x': selectedX,
+        'y': selectedY,
+        'tolerance':
+            tolerance,
+        'softness':
+            softness,
+        'connectedOnly':
+            connectedOnly,
+      },
+
+      'correction':
+          <String, dynamic>{
+        'cyan':
+            correction.cyan,
+        'magenta':
+            correction.magenta,
+        'yellow':
+            correction.yellow,
+        'black':
+            correction.black,
+      },
+
+      'global':
+          <String, dynamic>{
+        'brightness':
+            brightness,
+        'contrast':
+            contrast,
+        'saturation':
+            saturation,
+      },
+
+      'view':
+          <String, dynamic>{
+        'showBefore':
+            showBefore,
+        'showMask':
+            showMask,
+      },
+
+      'history':
+          <String, dynamic>{
+        'index':
+            historyIndex,
+        'length':
+            history.length,
+      },
+    };
+  }
+
+  // ============================================================
+  // SAVE PROJECT
   // ============================================================
 
   Future<void> _saveProject() async {
-    if (originalImage == null ||
-        exporting) {
+    final image =
+        originalImage;
+
+    if (image == null ||
+        processing) {
       return;
     }
 
     setState(() {
       exporting = true;
       statusMessage =
-          'Сохранение проекта...';
+          'Подготовка проекта...';
     });
 
     try {
-      final projectJson =
-          _projectJson();
-
-      final bytes =
-          Uint8List.fromList(
-        utf8.encode(
-          projectJson,
-        ),
+      final projectData =
+          jsonEncode(
+        _projectJson(),
       );
 
-      final baseName =
-          _baseName(
-        openedFileName ??
-            'print_project',
+      final imageBytes =
+          Uint8List.fromList(
+        img.encodePng(image),
+      );
+
+      final projectBytes =
+          utf8.encode(
+        projectData,
+      );
+
+      final combined =
+          <int>[];
+
+      combined.addAll(
+        <int>[
+          0x50,
+          0x43,
+          0x50,
+          0x52,
+          0x4F,
+          0x4A,
+          0x01,
+        ],
+      );
+
+      final jsonLength =
+          projectBytes.length;
+
+      combined.add(
+        (jsonLength >> 24) &
+            0xFF,
+      );
+      combined.add(
+        (jsonLength >> 16) &
+            0xFF,
+      );
+      combined.add(
+        (jsonLength >> 8) &
+            0xFF,
+      );
+      combined.add(
+        jsonLength & 0xFF,
+      );
+
+      combined.addAll(
+        projectBytes,
+      );
+
+      final imageLength =
+          imageBytes.length;
+
+      combined.add(
+        (imageLength >> 24) &
+            0xFF,
+      );
+      combined.add(
+        (imageLength >> 16) &
+            0xFF,
+      );
+      combined.add(
+        (imageLength >> 8) &
+            0xFF,
+      );
+      combined.add(
+        imageLength & 0xFF,
+      );
+
+      combined.addAll(
+        imageBytes,
       );
 
       final fileName =
-          '$baseName.printproject.json';
+          '${_baseName(openedFileName ?? 'project')}'
+          '.pcproj';
 
       final path =
           await FilePicker.saveFile(
@@ -2745,8 +3031,16 @@ class _EditorPageState extends State<EditorPage> {
             'Сохранить проект',
         fileName:
             fileName,
+        type:
+            FileType.custom,
+        allowedExtensions:
+            <String>[
+          'pcproj',
+        ],
         bytes:
-            bytes,
+            Uint8List.fromList(
+          combined,
+        ),
       );
 
       if (!mounted) {
@@ -2755,14 +3049,10 @@ class _EditorPageState extends State<EditorPage> {
 
       setState(() {
         exporting = false;
-
-        if (path == null) {
-          statusMessage =
-              'Сохранение отменено';
-        } else {
-          statusMessage =
-              'Проект сохранён';
-        }
+        statusMessage =
+            path == null
+                ? 'Сохранение отменено'
+                : 'Проект сохранён';
       });
     } catch (e) {
       if (!mounted) {
@@ -2778,201 +3068,137 @@ class _EditorPageState extends State<EditorPage> {
   }
 
   // ============================================================
-  // PROJECT INFORMATION
+  // BASE FILE NAME
   // ============================================================
 
-  Future<void> _showProjectInfo() async {
-    if (originalImage == null) {
-      return;
+  String _baseName(
+    String name,
+  ) {
+    final dot =
+        name.lastIndexOf('.');
+
+    if (dot <= 0) {
+      return name;
     }
 
-    await showDialog<void>(
-      context: context,
-      builder: (context) {
-        return AlertDialog(
-          title: const Text(
-            'Информация проекта',
-          ),
-          content:
-              SingleChildScrollView(
-            child: SelectableText(
-              _projectSummary(),
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () {
-                Navigator.of(context)
-                    .pop();
-              },
-              child:
-                  const Text('Закрыть'),
-            ),
-            FilledButton.icon(
-              onPressed: () async {
-                Navigator.of(context)
-                    .pop();
-
-                await _saveProject();
-              },
-              icon: const Icon(
-                Icons.save,
-              ),
-              label:
-                  const Text('Сохранить'),
-            ),
-          ],
-        );
-      },
+    return name.substring(
+      0,
+      dot,
     );
   }
 
-  String _projectSummary() {
-    final buffer =
-        StringBuffer();
+  // ============================================================
+  // EXPORT IMAGE
+  // ============================================================
 
-    buffer.writeln(
-      'Print Color App',
-    );
-
-    buffer.writeln(
-      'Версия проекта: 1',
-    );
-
-    if (openedFileName != null) {
-      buffer.writeln(
-        'Файл: $openedFileName',
-      );
-    }
-
+  Future<void> _exportImage() async {
     final image =
-        originalImage;
+        processedImage;
 
-    if (image != null) {
-      buffer.writeln(
-        'Размер: '
-        '${image.width} × '
-        '${image.height}',
-      );
+    if (image == null ||
+        processing ||
+        exporting) {
+      return;
     }
 
-    if (selectedColor != null) {
-      buffer.writeln(
-        'Выбранный цвет: '
-        '${selectedColor!.hex}',
+    setState(() {
+      exporting = true;
+      statusMessage =
+          'Подготовка изображения...';
+    });
+
+    try {
+      final bytes =
+          Uint8List.fromList(
+        img.encodePng(image),
       );
-    }
 
-    buffer.writeln(
-      'Диапазон: '
-      '${tolerance.round()}%',
-    );
+      final fileName =
+          '${_baseName(openedFileName ?? 'corrected')}'
+          '_corrected.png';
 
-    buffer.writeln(
-      'Мягкость: '
-      '${softness.round()}%',
-    );
-
-    buffer.writeln(
-      'Связанная область: '
-      '${connectedOnly ? 'Да' : 'Нет'}',
-    );
-
-    buffer.writeln(
-      'C: ${correction.cyan.round()}',
-    );
-
-    buffer.writeln(
-      'M: ${correction.magenta.round()}',
-    );
-
-    buffer.writeln(
-      'Y: ${correction.yellow.round()}',
-    );
-
-    buffer.writeln(
-      'K: ${correction.black.round()}',
-    );
-
-    buffer.writeln(
-      'Яркость: '
-      '${brightness.round()}',
-    );
-
-    buffer.writeln(
-      'Контраст: '
-      '${contrast.round()}',
-    );
-
-    buffer.writeln(
-      'Насыщенность: '
-      '${saturation.round()}',
-    );
-
-    if (mask != null) {
-      buffer.writeln(
-        'Выделено: '
-        '${mask!.selectedPercentage.toStringAsFixed(2)}%',
+      final path =
+          await FilePicker.saveFile(
+        dialogTitle:
+            'Экспортировать изображение',
+        fileName:
+            fileName,
+        type:
+            FileType.custom,
+        allowedExtensions:
+            <String>[
+          'png',
+        ],
+        bytes: bytes,
       );
-    }
 
-    return buffer.toString();
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        exporting = false;
+        statusMessage =
+            path == null
+                ? 'Экспорт отменён'
+                : 'Изображение экспортировано';
+      });
+    } catch (e) {
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        exporting = false;
+        statusMessage =
+            'Ошибка экспорта: $e';
+      });
+    }
   }
 
   // ============================================================
   // RESET ALL
   // ============================================================
 
-  Future<void> _resetAll() async {
-    final image =
-        originalImage;
-
-    if (image == null ||
-        processing) {
+  void _resetAll() {
+    if (processing ||
+        originalImage == null) {
       return;
     }
 
     setState(() {
-      processing = true;
-      statusMessage =
-          'Сброс изменений...';
+      processedImage =
+          originalImage!.clone();
 
       selectedColor = null;
       selectedX = null;
       selectedY = null;
+
+      tolerance = 20.0;
+      softness = 10.0;
+      connectedOnly = false;
 
       mask = null;
 
       correction =
           const CmykCorrection();
 
-      brightness = 0;
-      contrast = 0;
-      saturation = 0;
+      brightness = 0.0;
+      contrast = 0.0;
+      saturation = 0.0;
 
-      tolerance = 20;
-      softness = 10;
+      showBefore = false;
+      showMask = false;
 
-      connectedOnly = false;
+      history.clear();
+      historyIndex = -1;
 
-      processedImage =
-          image.clone();
-    });
-
-    await _smallDelay();
-
-    if (!mounted) {
-      return;
-    }
-
-    setState(() {
-      processing = false;
       statusMessage =
-          'Все изменения сброшены';
+          'Редактор сброшен';
     });
 
-    await _addHistoryPoint(
-      'Полный сброс',
+    _addHistoryPoint(
+      'Исходное изображение',
     );
   }
 
@@ -2980,47 +3206,8 @@ class _EditorPageState extends State<EditorPage> {
   // CLEAR IMAGE
   // ============================================================
 
-  Future<void> _clearImage() async {
+  void _clearImage() {
     if (processing) {
-      return;
-    }
-
-    final confirmed =
-        await showDialog<bool>(
-      context: context,
-      builder: (context) {
-        return AlertDialog(
-          title: const Text(
-            'Закрыть изображение?',
-          ),
-          content: const Text(
-            'Несохранённые изменения '
-            'будут удалены.',
-          ),
-          actions: [
-            TextButton(
-              onPressed: () {
-                Navigator.of(context)
-                    .pop(false);
-              },
-              child:
-                  const Text('Отмена'),
-            ),
-            FilledButton(
-              onPressed: () {
-                Navigator.of(context)
-                    .pop(true);
-              },
-              child:
-                  const Text('Закрыть'),
-            ),
-          ],
-        );
-      },
-    );
-
-    if (confirmed != true ||
-        !mounted) {
       return;
     }
 
@@ -3038,21 +3225,6 @@ class _EditorPageState extends State<EditorPage> {
 
       mask = null;
 
-      correction =
-          const CmykCorrection();
-
-      tolerance = 20;
-      softness = 10;
-
-      connectedOnly = false;
-
-      brightness = 0;
-      contrast = 0;
-      saturation = 0;
-
-      showBefore = false;
-      showMask = true;
-
       history.clear();
       historyIndex = -1;
 
@@ -3060,622 +3232,432 @@ class _EditorPageState extends State<EditorPage> {
           'Откройте изображение для начала работы';
     });
   }
-
-  // ============================================================
+    // ============================================================
   // HELP
   // ============================================================
 
-  Future<void> _showHelp() async {
-    await showDialog<void>(
+  void _showHelp() {
+    showDialog<void>(
       context: context,
       builder: (context) {
         return AlertDialog(
-          title: const Text(
-            'Как работать',
+          title: const Row(
+            children: [
+              Icon(Icons.help_outline),
+              SizedBox(width: 8),
+              Text('Как работать'),
+            ],
           ),
-          content:
-              const SingleChildScrollView(
-            child: Text(
-              '1. Откройте изображение.\n\n'
-              '2. Нажмите на нужный цвет '
-              'на изображении.\n\n'
-              '3. Настройте диапазон, '
-              'чтобы выбрать похожие оттенки.\n\n'
-              '4. Настройте мягкость края '
-              'для плавного перехода.\n\n'
-              '5. Включите «Связанная область», '
-              'если нужно выбрать только '
-              'соприкасающуюся область.\n\n'
-              '6. Настройте C, M, Y и K.\n\n'
-              '7. Используйте «До / После» '
-              'для проверки результата.\n\n'
-              '8. Сохраните проект или '
-              'экспортируйте PNG.\n\n'
-              'Проект сохраняет настройки '
-              'коррекции. Исходное изображение '
-              'не встраивается в JSON-файл.\n\n'
-              'Важно: закрытый формат '
-              'DPCS G5i / RIIN здесь '
-              'автоматически не создаётся.',
+          content: const SingleChildScrollView(
+            child: Column(
+              crossAxisAlignment:
+                  CrossAxisAlignment.start,
+              mainAxisSize:
+                  MainAxisSize.min,
+              children: [
+                Text(
+                  '1. Откройте изображение.',
+                  style: TextStyle(
+                    fontWeight:
+                        FontWeight.bold,
+                  ),
+                ),
+                SizedBox(height: 6),
+                Text(
+                  'Нажмите непосредственно на нужный '
+                  'цвет изображения.',
+                ),
+                SizedBox(height: 14),
+
+                Text(
+                  '2. Настройте диапазон.',
+                  style: TextStyle(
+                    fontWeight:
+                        FontWeight.bold,
+                  ),
+                ),
+                SizedBox(height: 6),
+                Text(
+                  'Диапазон определяет, насколько похожие '
+                  'оттенки будут включены в выделение.',
+                ),
+                SizedBox(height: 14),
+
+                Text(
+                  '3. Настройте мягкость.',
+                  style: TextStyle(
+                    fontWeight:
+                        FontWeight.bold,
+                  ),
+                ),
+                SizedBox(height: 6),
+                Text(
+                  'Мягкость создаёт плавный переход '
+                  'по краям выбранной области.',
+                ),
+                SizedBox(height: 14),
+
+                Text(
+                  '4. Проверьте маску.',
+                  style: TextStyle(
+                    fontWeight:
+                        FontWeight.bold,
+                  ),
+                ),
+                SizedBox(height: 6),
+                Text(
+                  'Голубая область показывает пиксели, '
+                  'к которым будет применена коррекция.',
+                ),
+                SizedBox(height: 14),
+
+                Text(
+                  '5. Измените CMYK.',
+                  style: TextStyle(
+                    fontWeight:
+                        FontWeight.bold,
+                  ),
+                ),
+                SizedBox(height: 6),
+                Text(
+                  'Коррекция применяется только к выбранной '
+                  'маске, остальные области не изменяются.',
+                ),
+                SizedBox(height: 14),
+
+                Text(
+                  '6. Используйте До/После.',
+                  style: TextStyle(
+                    fontWeight:
+                        FontWeight.bold,
+                  ),
+                ),
+                SizedBox(height: 6),
+                Text(
+                  'Так можно визуально сравнить исходное '
+                  'изображение и результат.',
+                ),
+                SizedBox(height: 14),
+
+                Text(
+                  '7. Сохраните результат.',
+                  style: TextStyle(
+                    fontWeight:
+                        FontWeight.bold,
+                  ),
+                ),
+                SizedBox(height: 6),
+                Text(
+                  'PNG сохраняет готовое исправленное '
+                  'изображение. Проект .pcproj сохраняет '
+                  'настройки текущей работы.',
+                ),
+              ],
             ),
           ),
           actions: [
             FilledButton(
-              onPressed: () {
-                Navigator.of(context)
-                    .pop();
-              },
+              onPressed:
+                  () => Navigator.of(
+                context,
+              ).pop(),
               child:
-                  const Text('Понятно'),
+                  const Text('Закрыть'),
             ),
           ],
         );
       },
     );
-  }  // ============================================================
-  // CONTROLS PANEL
+  }
+
+  // ============================================================
+  // FILE INFORMATION DIALOG
   // ============================================================
 
-  Widget _buildControlsPanel() {
-    return Container(
-      decoration: BoxDecoration(
-        color: Theme.of(context)
-            .colorScheme
-            .surface,
-        border: Border(
-          top: BorderSide(
-            color: Theme.of(context)
-                .dividerColor,
+  void _showFileInformation() {
+    final image =
+        originalImage;
+
+    if (image == null) {
+      return;
+    }
+
+    showDialog<void>(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title:
+              const Text(
+            'Информация',
           ),
-        ),
-      ),
-      child: SingleChildScrollView(
-        padding:
-            const EdgeInsets.only(
-          bottom: 24,
-        ),
-        child: Column(
-          crossAxisAlignment:
-              CrossAxisAlignment.stretch,
-          children: [
-            _buildSelectionSection(),
-            _buildCmykSection(),
-            _buildGlobalSection(),
-            _buildComparisonSection(),
-            _buildHistorySection(),
-
-            const SizedBox(
-              height: 8,
-            ),
-
-            Padding(
-              padding:
-                  const EdgeInsets.symmetric(
-                horizontal: 16,
-              ),
-              child: Row(
-                children: [
-                  Expanded(
-                    child: OutlinedButton
-                        .icon(
-                      onPressed:
-                          processing
-                              ? null
-                              : _resetAll,
-                      icon: const Icon(
-                        Icons.restart_alt,
-                      ),
-                      label: const Text(
-                        'Сбросить всё',
-                      ),
-                    ),
-                  ),
-                  const SizedBox(
-                    width: 8,
-                  ),
-                  Expanded(
-                    child: FilledButton.icon(
-                      onPressed:
-                          originalImage ==
-                                      null ||
-                                  processing
-                              ? null
-                              : _exportImage,
-                      icon: const Icon(
-                        Icons.download,
-                      ),
-                      label: const Text(
-                        'Экспорт',
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-
-            const SizedBox(
-              height: 8,
-            ),
-
-            Padding(
-              padding:
-                  const EdgeInsets.symmetric(
-                horizontal: 16,
-              ),
-              child: Row(
-                children: [
-                  Expanded(
-                    child: OutlinedButton
-                        .icon(
-                      onPressed:
-                          originalImage ==
-                                      null ||
-                                  exporting
-                              ? null
-                              : _saveProject,
-                      icon: const Icon(
-                        Icons.save_outlined,
-                      ),
-                      label: const Text(
-                        'Проект',
-                      ),
-                    ),
-                  ),
-                  const SizedBox(
-                    width: 8,
-                  ),
-                  Expanded(
-                    child: OutlinedButton
-                        .icon(
-                      onPressed:
-                          originalImage ==
-                                      null ||
-                                  processing
-                              ? null
-                              : _showProjectInfo,
-                      icon: const Icon(
-                        Icons.info_outline,
-                      ),
-                      label: const Text(
-                        'Инфо',
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-
-            const SizedBox(
-              height: 8,
-            ),
-
-            Padding(
-              padding:
-                  const EdgeInsets.symmetric(
-                horizontal: 16,
-              ),
-              child: OutlinedButton.icon(
-                onPressed:
-                    processing
-                        ? null
-                        : _showHelp,
-                icon: const Icon(
-                  Icons.help_outline,
+          content:
+              SingleChildScrollView(
+            child: Column(
+              crossAxisAlignment:
+                  CrossAxisAlignment.start,
+              mainAxisSize:
+                  MainAxisSize.min,
+              children: [
+                _dialogInfo(
+                  'Файл',
+                  openedFileName ??
+                      '—',
                 ),
-                label: const Text(
-                  'Инструкция',
+                _dialogInfo(
+                  'Размер',
+                  '${image.width} × ${image.height}',
                 ),
-              ),
+                _dialogInfo(
+                  'Путь',
+                  openedFilePath ??
+                      '—',
+                ),
+                _dialogInfo(
+                  'Выбранный цвет',
+                  selectedColor?.hex ??
+                      '—',
+                ),
+                _dialogInfo(
+                  'Диапазон',
+                  '${tolerance.round()}%',
+                ),
+                _dialogInfo(
+                  'Мягкость',
+                  '${softness.round()}%',
+                ),
+                _dialogInfo(
+                  'Связанная область',
+                  connectedOnly
+                      ? 'Да'
+                      : 'Нет',
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed:
+                  () => Navigator.of(
+                context,
+              ).pop(),
+              child:
+                  const Text('Закрыть'),
             ),
           ],
-        ),
+        );
+      },
+    );
+  }
+
+  // ============================================================
+  // DIALOG INFO
+  // ============================================================
+
+  Widget _dialogInfo(
+    String title,
+    String value,
+  ) {
+    return Padding(
+      padding:
+          const EdgeInsets.only(
+        bottom: 10,
+      ),
+      child: Column(
+        crossAxisAlignment:
+            CrossAxisAlignment.start,
+        children: [
+          Text(
+            title,
+            style:
+                const TextStyle(
+              fontWeight:
+                  FontWeight.bold,
+            ),
+          ),
+          const SizedBox(
+            height: 2,
+          ),
+          SelectableText(
+            value,
+          ),
+        ],
       ),
     );
   }
 
   // ============================================================
-  // IMAGE INFORMATION
+  // APPBAR ACTIONS
   // ============================================================
 
-  Widget _buildImageInfo() {
-    final image =
-        processedImage ?? originalImage;
+  Widget _buildExtraActions() {
+    return PopupMenuButton<String>(
+      tooltip:
+          'Дополнительные действия',
+      onSelected:
+          (value) {
+        switch (value) {
+          case 'info':
+            _showFileInformation();
+            break;
 
-    if (image == null) {
+          case 'clear':
+            _clearImage();
+            break;
+
+          case 'help':
+            _showHelp();
+            break;
+        }
+      },
+      itemBuilder:
+          (context) {
+        return const [
+          PopupMenuItem<String>(
+            value: 'info',
+            child: ListTile(
+              leading:
+                  Icon(Icons.info_outline),
+              title:
+                  Text('Информация'),
+              contentPadding:
+                  EdgeInsets.zero,
+            ),
+          ),
+          PopupMenuItem<String>(
+            value: 'help',
+            child: ListTile(
+              leading:
+                  Icon(Icons.help_outline),
+              title:
+                  Text('Справка'),
+              contentPadding:
+                  EdgeInsets.zero,
+            ),
+          ),
+          PopupMenuItem<String>(
+            value: 'clear',
+            child: ListTile(
+              leading:
+                  Icon(Icons.close),
+              title:
+                  Text('Закрыть изображение'),
+              contentPadding:
+                  EdgeInsets.zero,
+            ),
+          ),
+        ];
+      },
+    );
+  }
+
+  // ============================================================
+  // EXPORT PROGRESS
+  // ============================================================
+
+  Widget _buildExportIndicator() {
+    if (!exporting) {
       return const SizedBox
           .shrink();
     }
 
-    final selectionText =
-        selectedColor == null
-            ? 'Цвет не выбран'
-            : selectedColor!.hex;
-
-    final maskText =
-        mask == null
-            ? 'Маска не создана'
-            : '${mask!.selectedPercentage.toStringAsFixed(2)}%';
-
-    return Container(
-      width: double.infinity,
-      padding:
-          const EdgeInsets.symmetric(
-        horizontal: 16,
-        vertical: 10,
-      ),
-      color: Theme.of(context)
-          .colorScheme
-          .surfaceContainerHighest,
-      child: Wrap(
-        spacing: 18,
-        runSpacing: 6,
-        alignment:
-            WrapAlignment.center,
-        children: [
-          _infoItem(
-            Icons.photo_size_select_large,
-            '${image.width} × ${image.height}',
-          ),
-          _infoItem(
-            Icons.palette_outlined,
-            selectionText,
-          ),
-          _infoItem(
-            Icons.layers_outlined,
-            maskText,
-          ),
-          if (selectedX != null &&
-              selectedY != null)
-            _infoItem(
-              Icons.gps_fixed,
-              'X $selectedX  Y $selectedY',
+    return Positioned.fill(
+      child: Container(
+        color: Colors.black54,
+        child: Center(
+          child: Card(
+            child: Padding(
+              padding:
+                  const EdgeInsets.all(20),
+              child: Column(
+                mainAxisSize:
+                    MainAxisSize.min,
+                children: [
+                  const CircularProgressIndicator(),
+                  const SizedBox(
+                    height: 14,
+                  ),
+                  Text(
+                    'Сохранение...',
+                    style:
+                        Theme.of(context)
+                            .textTheme
+                            .titleMedium,
+                  ),
+                ],
+              ),
             ),
-        ],
+          ),
+        ),
       ),
     );
   }
 
-  Widget _infoItem(
-    IconData icon,
-    String text,
-  ) {
-    return Row(
-      mainAxisSize:
-          MainAxisSize.min,
+  // ============================================================
+  // IMAGE WORKSPACE
+  // ============================================================
+
+  Widget _buildWorkspace() {
+    return Stack(
+      fit: StackFit.expand,
       children: [
-        Icon(
-          icon,
-          size: 16,
-        ),
-        const SizedBox(
-          width: 5,
-        ),
-        Text(
-          text,
-          style: const TextStyle(
-            fontSize: 12,
-          ),
-        ),
+        _buildImageArea(),
+        _buildExportIndicator(),
       ],
     );
   }
 
   // ============================================================
-  // STATUS BAR
+  // DESKTOP WORKSPACE
   // ============================================================
 
-  Widget _buildStatusBar() {
-    return Container(
-      width: double.infinity,
-      padding:
-          const EdgeInsets.symmetric(
-        horizontal: 16,
-        vertical: 9,
-      ),
-      decoration: BoxDecoration(
-        border: Border(
-          top: BorderSide(
-            color: Theme.of(context)
-                .dividerColor,
-          ),
-        ),
-      ),
-      child: Row(
-        children: [
-          if (processing)
-            const SizedBox(
-              width: 15,
-              height: 15,
-              child:
-                  CircularProgressIndicator(
-                strokeWidth: 2,
-              ),
-            )
-          else
-            Icon(
-              statusMessage
-                      .toLowerCase()
-                      .contains('ошиб')
-                  ? Icons.error_outline
-                  : Icons.check_circle_outline,
-              size: 16,
-            ),
-
-          const SizedBox(
-            width: 8,
-          ),
-
-          Expanded(
-            child: Text(
-              statusMessage,
-              maxLines: 2,
-              overflow:
-                  TextOverflow.ellipsis,
-              style:
-                  const TextStyle(
-                fontSize: 12,
-              ),
-            ),
-          ),
-        ],
+  Widget _buildDesktopWorkspace(
+    BoxConstraints constraints,
+  ) {
+    final panelWidth =
+        math.min(
+      440.0,
+      math.max(
+        340.0,
+        constraints.maxWidth *
+            0.31,
       ),
     );
-  }
 
-  // ============================================================
-  // TOOLBAR
-  // ============================================================
+    return Column(
+      children: [
+        _buildToolbar(),
 
-  PreferredSizeWidget _buildToolbar() {
-    return AppBar(
-      title: const Text(
-        'Print Color App',
-      ),
-      centerTitle: false,
-      actions: [
-        IconButton(
-          tooltip:
-              'Открыть изображение',
-          onPressed:
-              processing
-                  ? null
-                  : _openImage,
-          icon: const Icon(
-            Icons.folder_open,
-          ),
-        ),
-
-        IconButton(
-          tooltip:
-              'Сохранить проект',
-          onPressed:
-              originalImage == null ||
-                      exporting
-                  ? null
-                  : _saveProject,
-          icon: const Icon(
-            Icons.save,
-          ),
-        ),
-
-        PopupMenuButton<String>(
-          enabled:
-              !processing,
-          onSelected:
-              (value) async {
-            switch (value) {
-              case 'info':
-                await _showProjectInfo();
-                break;
-
-              case 'help':
-                await _showHelp();
-                break;
-
-              case 'clear':
-                await _clearImage();
-                break;
-            }
-          },
-          itemBuilder:
-              (context) => const [
-            PopupMenuItem<String>(
-              value: 'info',
-              child: ListTile(
-                leading: Icon(
-                  Icons.info_outline,
-                ),
-                title: Text(
-                  'Информация',
-                ),
-              ),
-            ),
-            PopupMenuItem<String>(
-              value: 'help',
-              child: ListTile(
-                leading: Icon(
-                  Icons.help_outline,
-                ),
-                title: Text(
-                  'Инструкция',
-                ),
-              ),
-            ),
-            PopupMenuItem<String>(
-              value: 'clear',
-              child: ListTile(
-                leading: Icon(
-                  Icons.close,
-                ),
-                title: Text(
-                  'Закрыть изображение',
-                ),
-              ),
-            ),
-          ],
-        ),
-      ],
-    );
-  }
-
-  // ============================================================
-  // EMPTY STATE
-  // ============================================================
-
-  Widget _buildEmptyState() {
-    return Center(
-      child: SingleChildScrollView(
-        padding:
-            const EdgeInsets.all(32),
-        child: Column(
-          mainAxisAlignment:
-              MainAxisAlignment.center,
-          children: [
-            Icon(
-              Icons.image_search,
-              size: 82,
-              color: Theme.of(context)
-                  .colorScheme
-                  .primary,
-            ),
-
-            const SizedBox(
-              height: 20,
-            ),
-
-            const Text(
-              'Print Color App',
-              textAlign:
-                  TextAlign.center,
-              style: TextStyle(
-                fontSize: 26,
-                fontWeight:
-                    FontWeight.bold,
-              ),
-            ),
-
-            const SizedBox(
-              height: 10,
-            ),
-
-            const Text(
-              'Профессиональная коррекция '
-              'цвета для печатных изображений',
-              textAlign:
-                  TextAlign.center,
-            ),
-
-            const SizedBox(
-              height: 28,
-            ),
-
-            FilledButton.icon(
-              onPressed:
-                  processing
-                      ? null
-                      : _openImage,
-              icon: const Icon(
-                Icons.folder_open,
-              ),
-              label: const Padding(
-                padding:
-                    EdgeInsets.symmetric(
-                  horizontal: 8,
-                  vertical: 4,
-                ),
-                child: Text(
-                  'Открыть изображение',
-                ),
-              ),
-            ),
-
-            const SizedBox(
-              height: 14,
-            ),
-
-            OutlinedButton.icon(
-              onPressed:
-                  processing
-                      ? null
-                      : _showHelp,
-              icon: const Icon(
-                Icons.help_outline,
-              ),
-              label: const Text(
-                'Как это работает',
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  // ============================================================
-  // MAIN BODY
-  // ============================================================
-
-  Widget _buildBody() {
-    if (originalImage == null) {
-      return _buildEmptyState();
-    }
-
-    return LayoutBuilder(
-      builder:
-          (context, constraints) {
-        final wide =
-            constraints.maxWidth >=
-                900;
-
-        if (wide) {
-          return Row(
-            crossAxisAlignment:
-                CrossAxisAlignment.stretch,
+        Expanded(
+          child: Row(
             children: [
               Expanded(
-                flex: 7,
-                child:
-                    _buildPreviewArea(),
+                child: Column(
+                  children: [
+                    Expanded(
+                      child:
+                          _buildWorkspace(),
+                    ),
+                    _buildEditorInfo(),
+                  ],
+                ),
               ),
+
+              VerticalDivider(
+                width: 1,
+                thickness: 1,
+                color:
+                    Theme.of(context)
+                        .dividerColor,
+              ),
+
               SizedBox(
-                width: 390,
+                width: panelWidth,
                 child:
                     _buildControlsPanel(),
               ),
             ],
-          );
-        }
-
-        return Column(
-          children: [
-            Expanded(
-              child:
-                  _buildPreviewArea(),
-            ),
-            _buildControlsPanel(),
-          ],
-        );
-      },
-    );
-  }
-
-  // ============================================================
-  // PREVIEW AREA
-  // ============================================================
-
-  Widget _buildPreviewArea() {
-    return Column(
-      children: [
-        Expanded(
-          child: Container(
-            width: double.infinity,
-            color: Colors.black,
-            child:
-                _buildInteractiveImage(),
           ),
         ),
-
-        _buildImageInfo(),
 
         _buildStatusBar(),
       ],
@@ -3683,367 +3665,64 @@ class _EditorPageState extends State<EditorPage> {
   }
 
   // ============================================================
-  // KEYBOARD SHORTCUTS
+  // MOBILE WORKSPACE
   // ============================================================
 
-  Widget _buildKeyboardShortcuts(
-    Widget child,
+  Widget _buildMobileWorkspace(
+    BoxConstraints constraints,
   ) {
-    return CallbackShortcuts(
-      bindings: <ShortcutActivator,
-          VoidCallback>{
-        const SingleActivator(
-          LogicalKeyboardKey.keyO,
-          control: true,
-        ): _openImage,
+    return Column(
+      children: [
+        _buildToolbar(),
 
-        const SingleActivator(
-          LogicalKeyboardKey.keyS,
-          control: true,
-        ): () {
-          if (originalImage != null) {
-            _saveProject();
-          }
-        },
+        Expanded(
+          child: Column(
+            children: [
+              Expanded(
+                flex: 6,
+                child:
+                    _buildWorkspace(),
+              ),
 
-        const SingleActivator(
-          LogicalKeyboardKey.keyZ,
-          control: true,
-        ): _undo,
+              _buildEditorInfo(),
 
-        const SingleActivator(
-          LogicalKeyboardKey.keyY,
-          control: true,
-        ): _redo,
+              Expanded(
+                flex: 5,
+                child:
+                    _buildControlsPanel(),
+              ),
+            ],
+          ),
+        ),
 
-        const SingleActivator(
-          LogicalKeyboardKey.escape,
-        ): _clearSelection,
-      },
-      child: Focus(
-        autofocus: true,
-        child: child,
-      ),
-    );
-  }  // ============================================================
-  // HISTORY
-  // ============================================================
-
-  Future<void> _addHistoryPoint(
-    String label,
-  ) async {
-    final image =
-        processedImage;
-
-    if (image == null) {
-      return;
-    }
-
-    final snapshot =
-        HistorySnapshot(
-      label: label,
-      image: image.clone(),
-      color: selectedColor,
-      x: selectedX,
-      y: selectedY,
-      tolerance: tolerance,
-      softness: softness,
-      connectedOnly: connectedOnly,
-      correction: correction,
-      brightness: brightness,
-      contrast: contrast,
-      saturation: saturation,
-      mask: mask?.copy(),
-      time: _formatTime(
-        DateTime.now(),
-      ),
-    );
-
-    if (historyIndex <
-        history.length - 1) {
-      history.removeRange(
-        historyIndex + 1,
-        history.length,
-      );
-    }
-
-    history.add(snapshot);
-
-    if (history.length > 30) {
-      history.removeAt(0);
-    }
-
-    historyIndex =
-        history.length - 1;
-  }
-
-  void _undo() {
-    if (processing ||
-        historyIndex <= 0 ||
-        history.isEmpty) {
-      return;
-    }
-
-    _restoreHistory(
-      historyIndex - 1,
+        _buildStatusBar(),
+      ],
     );
   }
-
-  void _redo() {
-    if (processing ||
-        historyIndex >=
-            history.length - 1 ||
-        history.isEmpty) {
-      return;
-    }
-
-    _restoreHistory(
-      historyIndex + 1,
-    );
-  }
-
-  // ============================================================
-  // PROJECT JSON
-  // ============================================================
-
-  String _projectJson() {
-    final image =
-        originalImage;
-
-    final data =
-        <String, dynamic>{
-      'format':
-          'print_color_app_project',
-      'version': 1,
-      'fileName':
-          openedFileName,
-      'filePath':
-          openedFilePath,
-      'image': image == null
-          ? null
-          : {
-              'width': image.width,
-              'height': image.height,
-            },
-      'selection':
-          selectedColor == null
-              ? null
-              : {
-                  'r': selectedColor!.r,
-                  'g': selectedColor!.g,
-                  'b': selectedColor!.b,
-                  'hex':
-                      selectedColor!.hex,
-                  'x': selectedX,
-                  'y': selectedY,
-                  'tolerance':
-                      tolerance,
-                  'softness':
-                      softness,
-                  'connectedOnly':
-                      connectedOnly,
-                },
-      'cmyk': {
-        'cyan':
-            correction.cyan,
-        'magenta':
-            correction.magenta,
-        'yellow':
-            correction.yellow,
-        'black':
-            correction.black,
-      },
-      'global': {
-        'brightness':
-            brightness,
-        'contrast':
-            contrast,
-        'saturation':
-            saturation,
-      },
-      'mask': mask == null
-          ? null
-          : {
-              'width':
-                  mask!.width,
-              'height':
-                  mask!.height,
-              'selectedPixels':
-                  mask!.selectedPixels,
-              'selectedPercentage':
-                  mask!.selectedPercentage,
-            },
-      'historyLength':
-          history.length,
-      'historyIndex':
-          historyIndex,
-      'createdAt':
-          DateTime.now()
-              .toIso8601String(),
-    };
-
-    return const JsonEncoder.withIndent(
-      '  ',
-    ).convert(data);
-  }
-
-  // ============================================================
-  // EXPORT
-  // ============================================================
-
-  Future<void> _exportImage() async {
-    final image =
-        processedImage;
-
-    if (image == null ||
-        exporting) {
-      return;
-    }
-
-    setState(() {
-      exporting = true;
-      statusMessage =
-          'Подготовка изображения...';
-    });
-
-    try {
-      final pngBytes =
-          await compute(
-        _encodePngTask,
-        image,
-      );
-
-      final baseName =
-          _baseName(
-        openedFileName ??
-            'corrected_image',
-      );
-
-      final path =
-          await FilePicker.saveFile(
-        dialogTitle:
-            'Экспортировать изображение',
-        fileName:
-            '${baseName}_corrected.png',
-        bytes:
-            pngBytes,
-      );
-
-      if (!mounted) {
-        return;
-      }
-
-      setState(() {
-        exporting = false;
-
-        if (path == null) {
-          statusMessage =
-              'Экспорт отменён';
-        } else {
-          statusMessage =
-              'Изображение экспортировано';
-        }
-      });
-    } catch (e) {
-      if (!mounted) {
-        return;
-      }
-
-      setState(() {
-        exporting = false;
-        statusMessage =
-            'Ошибка экспорта: $e';
-      });
-    }
-  }
-
-  // ============================================================
-  // UTILITIES
-  // ============================================================
-
-  String _baseName(
-    String name,
-  ) {
-    final normalized =
-        name.replaceAll(
-      '\\',
-      '/',
-    );
-
-    final lastSlash =
-        normalized.lastIndexOf('/');
-
-    final fileName =
-        lastSlash >= 0
-            ? normalized.substring(
-                lastSlash + 1,
-              )
-            : normalized;
-
-    final dot =
-        fileName.lastIndexOf('.');
-
-    if (dot <= 0) {
-      return fileName;
-    }
-
-    return fileName.substring(
-      0,
-      dot,
-    );
-  }
-
-  String _formatTime(
-    DateTime value,
-  ) {
-    final hour =
-        value.hour
-            .toString()
-            .padLeft(2, '0');
-
-    final minute =
-        value.minute
-            .toString()
-            .padLeft(2, '0');
-
-    final second =
-        value.second
-            .toString()
-            .padLeft(2, '0');
-
-    return '$hour:$minute:$second';
-  }
-
-  Future<void> _smallDelay() async {
-    await Future<void>.delayed(
-      const Duration(
-        milliseconds: 20,
-      ),
-    );
-  }
-
-  // ============================================================
-  // LIFECYCLE
+    // ============================================================
+  // DISPOSE
   // ============================================================
 
   @override
   void dispose() {
+    _editorFocus.dispose();
     super.dispose();
   }
 }
 
-// ================================================================
+// ============================================================
 // HISTORY SNAPSHOT
-// ================================================================
+// ============================================================
 
-class HistorySnapshot {
-  final String label;
+class _HistorySnapshot {
   final img.Image image;
 
-  final RgbColor? color;
+  final String description;
 
-  final int? x;
-  final int? y;
+  final RgbColor? selectedColor;
+
+  final int? selectedX;
+  final int? selectedY;
 
   final double tolerance;
   final double softness;
@@ -4056,16 +3735,12 @@ class HistorySnapshot {
   final double contrast;
   final double saturation;
 
-  final MaskData? mask;
-
-  final String time;
-
-  const HistorySnapshot({
-    required this.label,
+  const _HistorySnapshot({
     required this.image,
-    required this.color,
-    required this.x,
-    required this.y,
+    required this.description,
+    required this.selectedColor,
+    required this.selectedX,
+    required this.selectedY,
     required this.tolerance,
     required this.softness,
     required this.connectedOnly,
@@ -4073,76 +3748,103 @@ class HistorySnapshot {
     required this.brightness,
     required this.contrast,
     required this.saturation,
-    required this.mask,
-    required this.time,
   });
 }
 
-// ================================================================
-// ISOLATE TASKS
-// ================================================================
+// ============================================================
+// MASK PAINTER
+// ============================================================
 
-class _MaskTask {
-  final img.Image image;
-  final ColorSelection selection;
-  final int? tapX;
-  final int? tapY;
-
-  const _MaskTask({
-    required this.image,
-    required this.selection,
-    required this.tapX,
-    required this.tapY,
-  });
-}
-
-MaskData _generateMaskTask(
-  _MaskTask task,
-) {
-  return MaskGenerator.generate(
-    image: task.image,
-    selection: task.selection,
-    tapX: task.tapX,
-    tapY: task.tapY,
-  );
-}
-
-// ================================================================
-// CMYK TASK
-// ================================================================
-
-class _CmykTask {
-  final img.Image image;
+class _MaskPainter extends CustomPainter {
   final MaskData mask;
-  final CmykCorrection correction;
 
-  const _CmykTask({
-    required this.image,
+  const _MaskPainter({
     required this.mask,
-    required this.correction,
   });
-}
 
-img.Image _processCmykTask(
-  _CmykTask task,
-) {
-  return CmykProcessor.applyCorrection(
-    source: task.image,
-    mask: task.mask,
-    correction: task.correction,
-  );
-}
+  @override
+  void paint(
+    Canvas canvas,
+    Size size,
+  ) {
+    if (mask.width <= 0 ||
+        mask.height <= 0 ||
+        mask.values.isEmpty) {
+      return;
+    }
 
-// ================================================================
-// PNG TASK
-// ================================================================
+    final cellWidth =
+        size.width /
+            mask.width;
 
-Uint8List _encodePngTask(
-  img.Image image,
-) {
-  return Uint8List.fromList(
-    img.encodePng(
-      image,
-    ),
-  );
+    final cellHeight =
+        size.height /
+            mask.height;
+
+    final paint =
+        Paint()
+          ..style =
+              PaintingStyle.fill
+          ..isAntiAlias = false;
+
+    final values =
+        mask.values;
+
+    for (var y = 0;
+        y < mask.height;
+        y++) {
+      for (var x = 0;
+          x < mask.width;
+          x++) {
+        final index =
+            y * mask.width + x;
+
+        if (index < 0 ||
+            index >= values.length) {
+          continue;
+        }
+
+        final value =
+            values[index];
+
+        if (value <= 0) {
+          continue;
+        }
+
+        final alpha =
+            (value * 0.55)
+                .round()
+                .clamp(
+                  0,
+                  255,
+                );
+
+        paint.color =
+            Color.fromARGB(
+          alpha,
+          0,
+          190,
+          255,
+        );
+
+        canvas.drawRect(
+          Rect.fromLTWH(
+            x * cellWidth,
+            y * cellHeight,
+            cellWidth + 0.5,
+            cellHeight + 0.5,
+          ),
+          paint,
+        );
+      }
+    }
+  }
+
+  @override
+  bool shouldRepaint(
+    covariant _MaskPainter oldDelegate,
+  ) {
+    return oldDelegate.mask !=
+        mask;
+  }
 }
