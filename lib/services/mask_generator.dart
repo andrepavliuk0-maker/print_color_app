@@ -1,4 +1,5 @@
 import 'dart:math' as math;
+import 'dart:typed_data';
 
 import 'package:image/image.dart' as img;
 
@@ -9,16 +10,16 @@ class MaskGenerator {
   /// Создаёт маску по выбранному цвету.
   ///
   /// tolerance:
-  /// 0   = только практически идентичный цвет
+  /// 0   = практически только выбранный цвет
   /// 100 = очень широкий диапазон
   ///
   /// softness:
   /// 0   = жёсткая граница
-  /// 100 = очень плавный переход
+  /// 100 = максимально плавный переход
   ///
   /// connectedOnly:
-  /// false = ищем похожие цвета по всему изображению
-  /// true  = выделяем только связанную область вокруг точки
+  /// false = похожие цвета по всему изображению
+  /// true  = только связанная область вокруг точки
   static MaskData generate({
     required img.Image image,
     required ColorSelection selection,
@@ -42,8 +43,6 @@ class MaskGenerator {
     );
   }
 
-  /// Глобальное выделение:
-  /// все похожие оттенки во всём изображении.
   static MaskData _generateGlobal({
     required img.Image image,
     required ColorSelection selection,
@@ -80,14 +79,14 @@ class MaskGenerator {
           selection.color.b.toDouble(),
         );
 
-        values[y * width + x] =
-            _strengthToByte(
-          _calculateStrength(
-            distance: distance,
-            threshold: threshold,
-            feather: feather,
-          ),
+        final strength = _calculateStrength(
+          distance: distance,
+          threshold: threshold,
+          feather: feather,
         );
+
+        values[y * width + x] =
+            _strengthToByte(strength);
       }
     }
 
@@ -98,11 +97,6 @@ class MaskGenerator {
     );
   }
 
-  /// Связанное выделение.
-  ///
-  /// Начинаем с точки, по которой пользователь
-  /// нажал на изображение, и распространяемся
-  /// только по соседним пикселям похожего цвета.
   static MaskData _generateConnected({
     required img.Image image,
     required ColorSelection selection,
@@ -125,10 +119,6 @@ class MaskGenerator {
       );
     }
 
-    /*
-     * Получаем реальный цвет точки,
-     * по которой пользователь нажал.
-     */
     final startPixel =
         image.getPixel(startX, startY);
 
@@ -138,9 +128,6 @@ class MaskGenerator {
       b: startPixel.b.toInt().clamp(0, 255),
     );
 
-    /*
-     * Основной диапазон цвета.
-     */
     final tolerance =
         selection.tolerance.clamp(0.0, 100.0);
 
@@ -155,13 +142,8 @@ class MaskGenerator {
     final feather =
         maxDistance * softness / 100.0;
 
-    /*
-     * Очередь пикселей для flood fill.
-     */
     final queue = <int>[];
-
-    final visited =
-        Uint8List(width * height);
+    final visited = Uint8List(width * height);
 
     final startIndex =
         startY * width + startX;
@@ -190,39 +172,19 @@ class MaskGenerator {
         target.b.toDouble(),
       );
 
-      final strength =
-          _calculateStrength(
+      final strength = _calculateStrength(
         distance: distance,
         threshold: threshold,
         feather: feather,
       );
 
-      /*
-       * Записываем силу выделения.
-       */
-      if (strength > 0) {
-        values[index] =
-            _strengthToByte(strength);
-      }
-
-      /*
-       * Если пиксель полностью вне диапазона,
-       * дальше через него не распространяемся.
-       */
       if (strength <= 0) {
         continue;
       }
 
-      /*
-       * 4-связность:
-       *
-       *     ↑
-       * ←   •   →
-       *     ↓
-       *
-       * Это предотвращает слишком агрессивное
-       * перескакивание через диагональные области.
-       */
+      values[index] =
+          _strengthToByte(strength);
+
       _addNeighbor(
         queue: queue,
         visited: visited,
@@ -267,7 +229,6 @@ class MaskGenerator {
     );
   }
 
-  /// Добавляет соседний пиксель в очередь.
   static void _addNeighbor({
     required List<int> queue,
     required Uint8List visited,
@@ -294,7 +255,6 @@ class MaskGenerator {
     queue.add(index);
   }
 
-  /// Евклидово расстояние между двумя RGB-цветами.
   static double _distance(
     double r1,
     double g1,
@@ -314,29 +274,17 @@ class MaskGenerator {
     );
   }
 
-  /// Вычисляет силу маски для конкретного пикселя.
   static double _calculateStrength({
     required double distance,
     required double threshold,
     required double feather,
   }) {
-    /*
-     * При tolerance = 0 разрешаем только
-     * практически идентичный цвет.
-     */
     if (threshold <= 0) {
-      return distance < 1.0
-          ? 1.0
-          : 0.0;
+      return distance < 1.0 ? 1.0 : 0.0;
     }
 
-    /*
-     * Без softness граница жёсткая.
-     */
     if (feather <= 0) {
-      return distance <= threshold
-          ? 1.0
-          : 0.0;
+      return distance <= threshold ? 1.0 : 0.0;
     }
 
     final edge =
@@ -350,12 +298,8 @@ class MaskGenerator {
       return 0.0;
     }
 
-    /*
-     * Плавный переход.
-     */
     final position =
-        (distance - threshold) /
-            feather;
+        (distance - threshold) / feather;
 
     final smooth =
         position *
