@@ -147,7 +147,7 @@ class _EditorPageState
     }
 
     try {
-      final result =
+            final result =
           await FilePicker.pickFiles(
         type: FileType.custom,
         allowedExtensions: <String>[
@@ -163,12 +163,12 @@ class _EditorPageState
       );
 
       if (result == null ||
-          result.files.isEmpty) {
+          result.isEmpty) {
         return;
       }
 
       final picked =
-          result.files.single;
+          result.first;
 
       final path =
           picked.path;
