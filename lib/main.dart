@@ -7,25 +7,24 @@ import 'package:flutter/material.dart';
 import 'package:image/image.dart' as img;
 
 void main() {
-  runApp(const PrintColorApp());
+  runApp(const PrintColorStudio());
 }
 
-class PrintColorApp extends StatelessWidget {
-  const PrintColorApp({super.key});
+class PrintColorStudio extends StatelessWidget {
+  const PrintColorStudio({super.key});
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      debugShowCheckedModeBanner: false,
       title: 'Print Color Studio',
+      debugShowCheckedModeBanner: false,
       theme: ThemeData(
         brightness: Brightness.dark,
-        scaffoldBackgroundColor: const Color(0xFF0B0D11),
+        useMaterial3: true,
         colorScheme: ColorScheme.fromSeed(
-          seedColor: const Color(0xFF7C5CFF),
+          seedColor: Colors.blue,
           brightness: Brightness.dark,
         ),
-        useMaterial3: true,
       ),
       home: const EditorPage(),
     );
@@ -40,714 +39,642 @@ class EditorPage extends StatefulWidget {
 }
 
 class _EditorPageState extends State<EditorPage> {
-  Uint8List? _originalBytes;
-  Uint8List? _processedBytes;
-  Uint8List? _referenceBytes;
+  img.Image? originalImage;
+  img.Image? editedImage;
 
-  img.Image? _originalImage;
-  img.Image? _processedImage;
+  Uint8List? originalBytes;
+  Uint8List? editedBytes;
+  Uint8List? referenceBytes;
 
-  String _fileName = 'No image loaded';
-  String _status = 'Ready';
+  String fileName = 'No image loaded';
+  String status = 'Ready';
 
-  bool _showBefore = false;
-  bool _showReference = false;
-  bool _processing = false;
+  double cyan = 0;
+  double magenta = 0;
+  double yellow = 0;
+  double black = 0;
 
-  double _cyan = 0;
-  double _magenta = 0;
-  double _yellow = 0;
-  double _black = 0;
+  double brightness = 0;
+  double contrast = 0;
+  double saturation = 0;
 
-  double _brightness = 0;
-  double _contrast = 0;
-  double _saturation = 0;
+  bool showBefore = false;
+  bool showReference = false;
+  bool processing = false;
 
-  double _zoom = 1.0;
-  int _rotation = 0;
+  double zoom = 1.0;
+  int rotation = 0;
 
-  Timer? _processingTimer;
+  Timer? _timer;
 
   @override
   void dispose() {
-    _processingTimer?.cancel();
+    _timer?.cancel();
     super.dispose();
   }
 
-  // ---------------------------------------------------------------------------
-  // FILES
-  // ---------------------------------------------------------------------------
-
-  Future<void> _loadImage() async {
+  Future<void> openImage() async {
     try {
-      final result = await FilePicker.platform.pickFiles(
+      final file = await FilePicker.pickFile(
         type: FileType.image,
-        withData: true,
       );
 
-      if (result == null || result.files.isEmpty) {
-        return;
-      }
+      if (file == null) return;
 
-      final file = result.files.first;
-      final bytes = file.bytes;
-
-      if (bytes == null || bytes.isEmpty) {
-        _setStatus('Could not read image');
-        return;
-      }
-
+      final bytes = await file.readAsBytes();
       final decoded = img.decodeImage(bytes);
 
       if (decoded == null) {
-        _setStatus('Unsupported image format');
+        setState(() {
+          status = 'Could not decode image';
+        });
         return;
       }
 
       setState(() {
-        _originalBytes = bytes;
-        _originalImage = decoded;
-        _processedImage = decoded.clone();
-        _processedBytes = Uint8List.fromList(img.encodePng(decoded));
-        _fileName = file.name;
-        _rotation = 0;
-        _zoom = 1.0;
+        originalBytes = bytes;
+        originalImage = decoded;
+        editedImage = decoded.clone();
+        editedBytes = bytes;
+        fileName = file.name;
+        status = 'Image loaded';
+        showBefore = false;
+        showReference = false;
+        zoom = 1.0;
+        rotation = 0;
       });
 
-      _setStatus('Loaded ${file.name}');
+      _processImage();
     } catch (e) {
-      _setStatus('Load error: $e');
+      setState(() {
+        status = 'Open error: $e';
+      });
     }
   }
 
-  Future<void> _loadReference() async {
+  Future<void> openReference() async {
     try {
-      final result = await FilePicker.platform.pickFiles(
+      final file = await FilePicker.pickFile(
         type: FileType.image,
-        withData: true,
       );
 
-      if (result == null || result.files.isEmpty) {
-        return;
-      }
+      if (file == null) return;
 
-      final bytes = result.files.first.bytes;
-
-      if (bytes == null || bytes.isEmpty) {
-        _setStatus('Could not read reference');
-        return;
-      }
-
-      final decoded = img.decodeImage(bytes);
-
-      if (decoded == null) {
-        _setStatus('Unsupported reference image');
-        return;
-      }
+      final bytes = await file.readAsBytes();
 
       setState(() {
-        _referenceBytes = Uint8List.fromList(bytes);
-        _showReference = true;
+        referenceBytes = bytes;
+        showReference = true;
+        status = 'Reference image loaded';
       });
-
-      _setStatus('Reference image loaded');
     } catch (e) {
-      _setStatus('Reference error: $e');
+      setState(() {
+        status = 'Reference error: $e';
+      });
     }
   }
 
-  Future<void> _exportImage() async {
-    if (_processedImage == null) {
-      _setStatus('Load an image first');
+  Future<void> exportImage() async {
+    if (editedImage == null) {
+      setState(() {
+        status = 'Nothing to export';
+      });
       return;
     }
 
     try {
-      final bytes = Uint8List.fromList(
-        img.encodePng(_processedImage!),
-      );
+      setState(() {
+        status = 'Preparing export...';
+      });
 
-      final baseName = _fileName.contains('.')
-          ? _fileName.substring(0, _fileName.lastIndexOf('.'))
-          : _fileName;
+      final output = img.encodePng(editedImage!);
 
-      final path = await FilePicker.platform.saveFile(
+      final baseName = fileName.contains('.')
+          ? fileName.substring(0, fileName.lastIndexOf('.'))
+          : fileName;
+
+      final uri = await FilePicker.saveFile(
         dialogTitle: 'Export corrected image',
         fileName: '${baseName}_corrected.png',
-        type: FileType.image,
-        bytes: bytes,
+        bytes: Uint8List.fromList(output),
+        mimeType: 'image/png',
       );
 
-      if (path != null) {
-        _setStatus('Exported successfully');
-      }
+      if (!mounted) return;
+
+      setState(() {
+        status = uri == null ? 'Export cancelled' : 'Export completed';
+      });
     } catch (e) {
-      _setStatus('Export error: $e');
+      setState(() {
+        status = 'Export error: $e';
+      });
     }
   }
 
-  // ---------------------------------------------------------------------------
-  // PROCESSING
-  // ---------------------------------------------------------------------------
+  void scheduleProcessing() {
+    _timer?.cancel();
 
-  void _scheduleProcessing() {
-    _processingTimer?.cancel();
-
-    _processingTimer = Timer(
+    _timer = Timer(
       const Duration(milliseconds: 120),
       _processImage,
     );
   }
 
   Future<void> _processImage() async {
-    final source = _originalImage;
-
-    if (source == null) {
-      return;
-    }
+    if (originalImage == null || processing) return;
 
     setState(() {
-      _processing = true;
+      processing = true;
+      status = 'Processing...';
     });
 
     await Future<void>.delayed(Duration.zero);
 
+    final source = originalImage!;
     final result = source.clone();
 
     for (int y = 0; y < result.height; y++) {
       for (int x = 0; x < result.width; x++) {
-        final p = result.getPixel(x, y);
+        final pixel = source.getPixel(x, y);
 
-        double r = p.r.toDouble();
-        double g = p.g.toDouble();
-        double b = p.b.toDouble();
+        double r = pixel.r.toDouble() / 255.0;
+        double g = pixel.g.toDouble() / 255.0;
+        double b = pixel.b.toDouble() / 255.0;
 
-        // RGB -> CMY
-        double c = 1.0 - r / 255.0;
-        double m = 1.0 - g / 255.0;
-        double yv = 1.0 - b / 255.0;
+        double k = 1.0 - math.max(r, math.max(g, b));
 
-        // CMYK separation
-        final k = math.min(c, math.min(m, yv));
+        double c;
+        double m;
+        double yValue;
 
-        double cc = k >= 0.999
-            ? 0
-            : (c - k) / (1.0 - k);
+        if (k >= 0.999999) {
+          c = 0;
+          m = 0;
+          yValue = 0;
+        } else {
+          c = (1 - r - k) / (1 - k);
+          m = (1 - g - k) / (1 - k);
+          yValue = (1 - b - k) / (1 - k);
+        }
 
-        double mm = k >= 0.999
-            ? 0
-            : (m - k) / (1.0 - k);
+        c = _clamp01(c + cyan / 100.0);
+        m = _clamp01(m + magenta / 100.0);
+        yValue = _clamp01(yValue + yellow / 100.0);
+        k = _clamp01(k + black / 100.0);
 
-        double yy = k >= 0.999
-            ? 0
-            : (yv - k) / (1.0 - k);
+        r = (1 - c) * (1 - k);
+        g = (1 - m) * (1 - k);
+        b = (1 - yValue) * (1 - k);
 
-        // Apply user CMYK corrections.
-        cc = _clamp01(cc + _cyan / 100.0);
-        mm = _clamp01(mm + _magenta / 100.0);
-        yy = _clamp01(yy + _yellow / 100.0);
+        final brightnessOffset = brightness / 100.0;
 
-        double kk = _clamp01(k + _black / 100.0);
+        r += brightnessOffset;
+        g += brightnessOffset;
+        b += brightnessOffset;
 
-        // CMYK -> RGB
-        r = 255.0 * (1.0 - cc) * (1.0 - kk);
-        g = 255.0 * (1.0 - mm) * (1.0 - kk);
-        b = 255.0 * (1.0 - yy) * (1.0 - kk);
-
-        // Brightness
-        r += _brightness * 2.55;
-        g += _brightness * 2.55;
-        b += _brightness * 2.55;
-
-        // Contrast
         final contrastFactor =
-            (259.0 * (_contrast + 255.0)) /
-            (255.0 * (259.0 - _contrast));
+            (259.0 * (contrast + 255.0)) /
+            (255.0 * (259.0 - contrast));
 
-        r = contrastFactor * (r - 128.0) + 128.0;
-        g = contrastFactor * (g - 128.0) + 128.0;
-        b = contrastFactor * (b - 128.0) + 128.0;
+        r = contrastFactor * (r - 0.5) + 0.5;
+        g = contrastFactor * (g - 0.5) + 0.5;
+        b = contrastFactor * (b - 0.5) + 0.5;
 
-        // Saturation
-        final gray = 0.299 * r + 0.587 * g + 0.114 * b;
-        final saturationFactor = 1.0 + _saturation / 100.0;
+        final gray =
+            0.299 * r +
+            0.587 * g +
+            0.114 * b;
+
+        final saturationFactor =
+            1.0 + saturation / 100.0;
 
         r = gray + (r - gray) * saturationFactor;
         g = gray + (g - gray) * saturationFactor;
         b = gray + (b - gray) * saturationFactor;
 
-        result.setPixelRgb(
-          x,
-          y,
-          _clamp255(r).toInt(),
-          _clamp255(g).toInt(),
-          _clamp255(b).toInt(),
-        );
+        final rr = (_clamp01(r) * 255).round();
+        final gg = (_clamp01(g) * 255).round();
+        final bb = (_clamp01(b) * 255).round();
+
+        result.setPixelRgb(x, y, rr, gg, bb);
       }
     }
 
-    if (!mounted) {
-      return;
-    }
+    if (!mounted) return;
 
     setState(() {
-      _processedImage = result;
-      _processedBytes = Uint8List.fromList(
-        img.encodePng(result),
-      );
-      _processing = false;
+      editedImage = result;
+      editedBytes =
+          Uint8List.fromList(img.encodePng(result));
+      processing = false;
+      status = 'Ready';
     });
-
-    _setStatus('Preview updated');
   }
 
   double _clamp01(double value) {
-    return value.clamp(0.0, 1.0).toDouble();
+    return value.clamp(0.0, 1.0);
   }
 
-  double _clamp255(double value) {
-    return value.clamp(0.0, 255.0).toDouble();
-  }
-
-  // ---------------------------------------------------------------------------
-  // RESET / PRESETS
-  // ---------------------------------------------------------------------------
-
-  void _reset() {
+  void resetAdjustments() {
     setState(() {
-      _cyan = 0;
-      _magenta = 0;
-      _yellow = 0;
-      _black = 0;
-      _brightness = 0;
-      _contrast = 0;
-      _saturation = 0;
-      _rotation = 0;
-      _zoom = 1.0;
+      cyan = 0;
+      magenta = 0;
+      yellow = 0;
+      black = 0;
+      brightness = 0;
+      contrast = 0;
+      saturation = 0;
+      zoom = 1.0;
+      rotation = 0;
+      showBefore = false;
     });
 
-    _scheduleProcessing();
-    _setStatus('Settings reset');
+    _processImage();
   }
 
-  void _applyPreset(
-    String name, {
-    double cyan = 0,
-    double magenta = 0,
-    double yellow = 0,
-    double black = 0,
-    double brightness = 0,
-    double contrast = 0,
-    double saturation = 0,
-  }) {
-    setState(() {
-      _cyan = cyan;
-      _magenta = magenta;
-      _yellow = yellow;
-      _black = black;
-      _brightness = brightness;
-      _contrast = contrast;
-      _saturation = saturation;
-    });
+  void applyPreset(String preset) {
+    switch (preset) {
+      case 'Neutral':
+        cyan = 0;
+        magenta = 0;
+        yellow = 0;
+        black = 0;
+        brightness = 0;
+        contrast = 0;
+        saturation = 0;
+        break;
 
-    _scheduleProcessing();
-    _setStatus('Preset: $name');
-  }
+      case 'Warm':
+        cyan = -5;
+        magenta = 2;
+        yellow = 8;
+        black = 0;
+        brightness = 2;
+        contrast = 0;
+        saturation = 4;
+        break;
 
-  // ---------------------------------------------------------------------------
-  // ROTATION / ZOOM
-  // ---------------------------------------------------------------------------
+      case 'Cool':
+        cyan = 8;
+        magenta = 0;
+        yellow = -8;
+        black = 0;
+        brightness = 1;
+        contrast = 0;
+        saturation = 3;
+        break;
 
-  void _rotateLeft() {
-    setState(() {
-      _rotation = (_rotation - 90) % 360;
-    });
-  }
+      case 'More Ink':
+        cyan = 5;
+        magenta = 5;
+        yellow = 5;
+        black = 8;
+        brightness = -2;
+        contrast = 3;
+        saturation = 0;
+        break;
 
-  void _rotateRight() {
-    setState(() {
-      _rotation = (_rotation + 90) % 360;
-    });
-  }
-
-  void _zoomIn() {
-    setState(() {
-      _zoom = (_zoom + 0.1).clamp(0.25, 4.0);
-    });
-  }
-
-  void _zoomOut() {
-    setState(() {
-      _zoom = (_zoom - 0.1).clamp(0.25, 4.0);
-    });
-  }
-
-  void _setStatus(String text) {
-    if (!mounted) {
-      return;
+      case 'Less Ink':
+        cyan = -5;
+        magenta = -5;
+        yellow = -5;
+        black = -8;
+        brightness = 2;
+        contrast = 0;
+        saturation = 0;
+        break;
     }
 
+    setState(() {});
+    _processImage();
+  }
+
+  void rotateLeft() {
+    if (originalImage == null) return;
+
     setState(() {
-      _status = text;
+      rotation = (rotation - 90) % 360;
     });
   }
 
-  // ---------------------------------------------------------------------------
-  // UI
-  // ---------------------------------------------------------------------------
+  void rotateRight() {
+    if (originalImage == null) return;
 
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      body: SafeArea(
-        child: Column(
-          children: [
-            _buildTopBar(),
-            Expanded(
-              child: Row(
-                children: [
-                  SizedBox(
-                    width: 290,
-                    child: _buildLeftPanel(),
-                  ),
-                  Expanded(
-                    child: _buildPreviewArea(),
-                  ),
-                  SizedBox(
-                    width: 270,
-                    child: _buildRightPanel(),
-                  ),
-                ],
-              ),
-            ),
-            _buildStatusBar(),
-          ],
+    setState(() {
+      rotation = (rotation + 90) % 360;
+    });
+  }
+
+  void zoomIn() {
+    setState(() {
+      zoom = math.min(zoom + 0.25, 4.0);
+    });
+  }
+
+  void zoomOut() {
+    setState(() {
+      zoom = math.max(zoom - 0.25, 0.25);
+    });
+  }
+
+  String _formatValue(double value) {
+    if (value > -0.01 && value < 0.01) {
+      return '0';
+    }
+
+    return value.toStringAsFixed(0);
+  }
+
+  Widget _sectionTitle(String title) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Text(
+        title,
+        style: const TextStyle(
+          fontSize: 12,
+          fontWeight: FontWeight.bold,
+          color: Colors.white70,
+          letterSpacing: 1.0,
         ),
       ),
     );
   }
 
-  Widget _buildTopBar() {
-    return Container(
-      height: 68,
-      padding: const EdgeInsets.symmetric(horizontal: 18),
-      decoration: BoxDecoration(
-        color: const Color(0xFF11141A),
-        border: Border(
-          bottom: BorderSide(
-            color: Colors.white.withOpacity(0.07),
-          ),
+  Widget _divider() {
+    return const Padding(
+      padding: EdgeInsets.symmetric(vertical: 12),
+      child: Divider(height: 1),
+    );
+  }
+
+  Widget _slider({
+    required String label,
+    required double value,
+    required ValueChanged<double> onChanged,
+    required Color color,
+  }) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Container(
+              width: 10,
+              height: 10,
+              decoration: BoxDecoration(
+                color: color,
+                shape: BoxShape.circle,
+              ),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                label,
+                style: const TextStyle(fontSize: 13),
+              ),
+            ),
+            SizedBox(
+              width: 40,
+              child: Text(
+                _formatValue(value),
+                textAlign: TextAlign.right,
+                style: const TextStyle(
+                  fontSize: 12,
+                  color: Colors.white70,
+                ),
+              ),
+            ),
+          ],
         ),
+        Slider(
+          value: value,
+          min: -100,
+          max: 100,
+          divisions: 200,
+          onChanged: (newValue) {
+            onChanged(newValue);
+            scheduleProcessing();
+          },
+        ),
+      ],
+    );
+  }
+
+  Widget _smallButton({
+    required String label,
+    required VoidCallback onPressed,
+    IconData? icon,
+  }) {
+    return OutlinedButton.icon(
+      onPressed: onPressed,
+      icon: icon == null
+          ? const SizedBox.shrink()
+          : Icon(icon, size: 16),
+      label: Text(label),
+      style: OutlinedButton.styleFrom(
+        minimumSize: const Size(0, 38),
       ),
-      child: Row(
+    );
+  }
+    Widget _buildLeftPanel() {
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Container(
-            width: 40,
-            height: 40,
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(12),
-              gradient: const LinearGradient(
-                colors: [
-                  Color(0xFF7C5CFF),
-                  Color(0xFF4C9AFF),
-                ],
-              ),
-            ),
-            child: const Icon(
-              Icons.colorize,
-              color: Colors.white,
-            ),
+          _sectionTitle('COLOR CORRECTION'),
+
+          _slider(
+            label: 'Cyan',
+            value: cyan,
+            color: Colors.cyan,
+            onChanged: (value) => setState(() => cyan = value),
           ),
-          const SizedBox(width: 12),
-          const Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            crossAxisAlignment: CrossAxisAlignment.start,
+
+          _slider(
+            label: 'Magenta',
+            value: magenta,
+            color: Colors.pink,
+            onChanged: (value) => setState(() => magenta = value),
+          ),
+
+          _slider(
+            label: 'Yellow',
+            value: yellow,
+            color: Colors.yellow,
+            onChanged: (value) => setState(() => yellow = value),
+          ),
+
+          _slider(
+            label: 'Black',
+            value: black,
+            color: Colors.grey,
+            onChanged: (value) => setState(() => black = value),
+          ),
+
+          _divider(),
+
+          _sectionTitle('IMAGE'),
+
+          _slider(
+            label: 'Brightness',
+            value: brightness,
+            color: Colors.orange,
+            onChanged: (value) => setState(() => brightness = value),
+          ),
+
+          _slider(
+            label: 'Contrast',
+            value: contrast,
+            color: Colors.blueGrey,
+            onChanged: (value) => setState(() => contrast = value),
+          ),
+
+          _slider(
+            label: 'Saturation',
+            value: saturation,
+            color: Colors.purple,
+            onChanged: (value) => setState(() => saturation = value),
+          ),
+
+          _divider(),
+
+          _sectionTitle('VIEW'),
+
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
             children: [
-              Text(
-                'PRINT COLOR STUDIO',
-                style: TextStyle(
-                  fontWeight: FontWeight.bold,
-                  fontSize: 15,
-                  letterSpacing: 1.2,
-                ),
+              _smallButton(
+                label: 'Before',
+                icon: Icons.compare,
+                onPressed: () {
+                  setState(() {
+                    showBefore = !showBefore;
+                  });
+                },
               ),
-              Text(
-                'CMYK COLOR CORRECTION',
-                style: TextStyle(
-                  color: Colors.white54,
-                  fontSize: 10,
-                  letterSpacing: 1.1,
-                ),
+              _smallButton(
+                label: 'Reference',
+                icon: Icons.image,
+                onPressed: () {
+                  if (referenceBytes == null) {
+                    openReference();
+                  } else {
+                    setState(() {
+                      showReference = !showReference;
+                    });
+                  }
+                },
+              ),
+              _smallButton(
+                label: 'Reset',
+                icon: Icons.restart_alt,
+                onPressed: resetAdjustments,
               ),
             ],
-          ),
-          const Spacer(),
-          _topButton(
-            icon: Icons.folder_open,
-            label: 'OPEN',
-            onPressed: _loadImage,
-          ),
-          const SizedBox(width: 8),
-          _topButton(
-            icon: Icons.image_outlined,
-            label: 'REFERENCE',
-            onPressed: _loadReference,
-          ),
-          const SizedBox(width: 8),
-          _topButton(
-            icon: Icons.download_outlined,
-            label: 'EXPORT',
-            onPressed: _exportImage,
-            primary: true,
           ),
         ],
       ),
     );
   }
 
-  Widget _topButton({
-    required IconData icon,
-    required String label,
-    required VoidCallback onPressed,
-    bool primary = false,
-  }) {
-    return FilledButton.icon(
-      onPressed: onPressed,
-      style: FilledButton.styleFrom(
-        backgroundColor: primary
-            ? const Color(0xFF6D4AFF)
-            : const Color(0xFF1A1E26),
-        foregroundColor: Colors.white,
-        padding: const EdgeInsets.symmetric(
-          horizontal: 13,
-          vertical: 12,
-        ),
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(9),
-        ),
-      ),
-      icon: Icon(icon, size: 17),
-      label: Text(
-        label,
-        style: const TextStyle(
-          fontSize: 11,
-          fontWeight: FontWeight.bold,
-        ),
-      ),
-    );
-  }
-
-  Widget _buildLeftPanel() {
-    return Container(
-      color: const Color(0xFF101319),
-      child: SingleChildScrollView(
-        padding: const EdgeInsets.fromLTRB(18, 18, 18, 24),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            _sectionTitle('COLOR CORRECTION'),
-            const SizedBox(height: 10),
-
-            _slider(
-              label: 'CYAN',
-              value: _cyan,
-              onChanged: (v) {
-                setState(() => _cyan = v);
-                _scheduleProcessing();
-              },
-              valueText: _formatValue(_cyan),
-              icon: Icons.water_drop_outlined,
-            ),
-
-            _slider(
-              label: 'MAGENTA',
-              value: _magenta,
-              onChanged: (v) {
-                setState(() => _magenta = v);
-                _scheduleProcessing();
-              },
-              valueText: _formatValue(_magenta),
-              icon: Icons.circle_outlined,
-            ),
-
-            _slider(
-              label: 'YELLOW',
-              value: _yellow,
-              onChanged: (v) {
-                setState(() => _yellow = v);
-                _scheduleProcessing();
-              },
-              valueText: _formatValue(_yellow),
-              icon: Icons.wb_sunny_outlined,
-            ),
-
-            _slider(
-              label: 'BLACK',
-              value: _black,
-              onChanged: (v) {
-                setState(() => _black = v);
-                _scheduleProcessing();
-              },
-              valueText: _formatValue(_black),
-              icon: Icons.contrast,
-            ),
-
-            const SizedBox(height: 14),
-            _divider(),
-            const SizedBox(height: 14),
-
-            _sectionTitle('IMAGE'),
-
-            _slider(
-              label: 'BRIGHTNESS',
-              value: _brightness,
-              onChanged: (v) {
-                setState(() => _brightness = v);
-                _scheduleProcessing();
-              },
-              valueText: _formatValue(_brightness),
-              icon: Icons.brightness_6_outlined,
-            ),
-
-            _slider(
-              label: 'CONTRAST',
-              value: _contrast,
-              onChanged: (v) {
-                setState(() => _contrast = v);
-                _scheduleProcessing();
-              },
-              valueText: _formatValue(_contrast),
-              icon: Icons.tonality_outlined,
-            ),
-
-            _slider(
-              label: 'SATURATION',
-              value: _saturation,
-              onChanged: (v) {
-                setState(() => _saturation = v);
-                _scheduleProcessing();
-              },
-              valueText: _formatValue(_saturation),
-              icon: Icons.palette_outlined,
-            ),
-
-            const SizedBox(height: 14),
-            _divider(),
-            const SizedBox(height: 14),
-
-            _sectionTitle('VIEW'),
-
-            Row(
-              children: [
-                Expanded(
-                  child: _smallButton(
-                    icon: Icons.rotate_left,
-                    label: 'LEFT',
-                    onPressed: _rotateLeft,
-                  ),
-                ),
-                const SizedBox(width: 6),
-                Expanded(
-                  child: _smallButton(
-                    icon: Icons.rotate_right,
-                    label: 'RIGHT',
-                    onPressed: _rotateRight,
-                  ),
-                ),
-              ],
-            ),
-
-            const SizedBox(height: 8),
-
-            Row(
-              children: [
-                Expanded(
-                  child: _smallButton(
-                    icon: Icons.remove,
-                    label: 'ZOOM',
-                    onPressed: _zoomOut,
-                  ),
-                ),
-                const SizedBox(width: 6),
-                Expanded(
-                  child: _smallButton(
-                    icon: Icons.add,
-                    label: '${(_zoom * 100).round()}%',
-                    onPressed: _zoomIn,
-                  ),
-                ),
-              ],
-            ),
-
-            const SizedBox(height: 8),
-
-            SizedBox(
-              width: double.infinity,
-              child: OutlinedButton.icon(
-                onPressed: _reset,
-                icon: const Icon(Icons.refresh, size: 17),
-                label: const Text('RESET ALL'),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildPreviewArea() {
-    return Container(
-      color: const Color(0xFF0B0D11),
+  Widget _buildRightPanel() {
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(16),
       child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Container(
-            height: 48,
-            padding: const EdgeInsets.symmetric(horizontal: 18),
-            decoration: BoxDecoration(
-              color: const Color(0xFF0E1116),
-              border: Border(
-                bottom: BorderSide(
-                  color: Colors.white.withOpacity(0.05),
-                ),
-              ),
-            ),
-            child: Row(
+          _sectionTitle('PRESETS'),
+
+          SizedBox(
+            width: double.infinity,
+            child: Column(
               children: [
-                const Icon(
-                  Icons.preview_outlined,
-                  size: 18,
-                  color: Colors.white54,
-                ),
-                const SizedBox(width: 8),
-                Text(
-                  _showBefore ? 'ORIGINAL' : 'CORRECTED PREVIEW',
-                  style: const TextStyle(
-                    fontSize: 11,
-                    fontWeight: FontWeight.bold,
-                    letterSpacing: 1,
-                  ),
-                ),
-                const Spacer(),
-                Switch(
-                  value: _showBefore,
-                  onChanged: (value) {
-                    setState(() {
-                      _showBefore = value;
-                    });
-                  },
-                ),
-                const Text(
-                  'BEFORE',
-                  style: TextStyle(
-                    fontSize: 10,
-                    color: Colors.white54,
-                  ),
-                ),
+                _presetButton('Neutral'),
+                const SizedBox(height: 6),
+                _presetButton('Warm'),
+                const SizedBox(height: 6),
+                _presetButton('Cool'),
+                const SizedBox(height: 6),
+                _presetButton('More Ink'),
+                const SizedBox(height: 6),
+                _presetButton('Less Ink'),
               ],
             ),
           ),
+
+          _divider(),
+
+          _sectionTitle('CURRENT VALUES'),
+
+          _valueRow('C', cyan),
+          _valueRow('M', magenta),
+          _valueRow('Y', yellow),
+          _valueRow('K', black),
+
+          const SizedBox(height: 16),
+
+          _valueRow('Brightness', brightness),
+          _valueRow('Contrast', contrast),
+          _valueRow('Saturation', saturation),
+
+          _divider(),
+
+          _sectionTitle('REFERENCE'),
+
+          if (referenceBytes == null)
+            const Text(
+              'No reference image loaded.',
+              style: TextStyle(
+                color: Colors.white54,
+                fontSize: 12,
+              ),
+            )
+          else
+            ClipRRect(
+              borderRadius: BorderRadius.circular(8),
+              child: Image.memory(
+                referenceBytes!,
+                width: double.infinity,
+                height: 160,
+                fit: BoxFit.contain,
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _presetButton(String name) {
+    return SizedBox(
+      width: double.infinity,
+      child: OutlinedButton(
+        onPressed: () => applyPreset(name),
+        child: Text(name),
+      ),
+    );
+  }
+
+  Widget _valueRow(String label, double value) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Row(
+        children: [
           Expanded(
-            child: _buildCanvas(),
+            child: Text(
+              label,
+              style: const TextStyle(
+                color: Colors.white70,
+              ),
+            ),
+          ),
+          Text(
+            _formatValue(value),
+            style: const TextStyle(
+              fontWeight: FontWeight.bold,
+            ),
           ),
         ],
       ),
@@ -755,37 +682,354 @@ class _EditorPageState extends State<EditorPage> {
   }
 
   Widget _buildCanvas() {
-    Uint8List? bytes;
-
-    if (_showReference && _referenceBytes != null) {
-      bytes = _referenceBytes;
-    } else if (_showBefore) {
-      bytes = _originalBytes;
-    } else {
-      bytes = _processedBytes;
-    }
+    final bytes = showBefore ? originalBytes : editedBytes;
 
     if (bytes == null) {
-      return Center(
+      return const Center(
         child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
+          mainAxisSize: MainAxisSize.min,
           children: [
-            Container(
-              width: 90,
-              height: 90,
-              decoration: BoxDecoration(
-                color: const Color(0xFF141820),
-                borderRadius: BorderRadius.circular(24),
-              ),
-              child: const Icon(
-                Icons.image_search_outlined,
-                size: 42,
-                color: Colors.white24,
-              ),
+            Icon(
+              Icons.image_outlined,
+              size: 72,
+              color: Colors.white24,
             ),
-            const SizedBox(height: 20),
-            const Text(
-              'No image loaded',
+            SizedBox(height: 16),
+            Text(
+              'Open an image to begin',
               style: TextStyle(
                 fontSize: 18,
-                fontWeight: FontWeight.
+                color: Colors.white70,
+              ),
+            ),
+            SizedBox(height: 8),
+            Text(
+              'PNG, JPG and other supported image formats',
+              style: TextStyle(
+                color: Colors.white38,
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    Widget image = Image.memory(
+      bytes,
+      fit: BoxFit.contain,
+      gaplessPlayback: true,
+    );
+
+    if (rotation != 0) {
+      image = RotatedBox(
+        quarterTurns: rotation ~/ 90,
+        child: image,
+      );
+    }
+
+    final displayedImage = InteractiveViewer(
+      minScale: 0.25,
+      maxScale: 4.0,
+      child: Transform.scale(
+        scale: zoom,
+        child: image,
+      ),
+    );
+
+    if (showReference && referenceBytes != null) {
+      return Stack(
+        fit: StackFit.expand,
+        children: [
+          Center(
+            child: displayedImage,
+          ),
+          Positioned(
+            right: 16,
+            top: 16,
+            child: Container(
+              width: 180,
+              height: 180,
+              padding: const EdgeInsets.all(4),
+              decoration: BoxDecoration(
+                color: Colors.black87,
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(
+                  color: Colors.white24,
+                ),
+              ),
+              child: Image.memory(
+                referenceBytes!,
+                fit: BoxFit.contain,
+              ),
+            ),
+          ),
+        ],
+      );
+    }
+
+    return Center(
+      child: displayedImage,
+    );
+  }
+
+  Widget _buildStatusBar() {
+    return Container(
+      height: 34,
+      padding: const EdgeInsets.symmetric(horizontal: 12),
+      decoration: BoxDecoration(
+        color: Theme.of(context)
+            .colorScheme
+            .surfaceContainerHighest,
+        border: const Border(
+          top: BorderSide(
+            color: Colors.white12,
+          ),
+        ),
+      ),
+      child: Row(
+        children: [
+          if (processing)
+            const SizedBox(
+              width: 14,
+              height: 14,
+              child: CircularProgressIndicator(
+                strokeWidth: 2,
+              ),
+            ),
+
+          if (processing)
+            const SizedBox(width: 8),
+
+          Expanded(
+            child: Text(
+              status,
+              style: const TextStyle(
+                fontSize: 12,
+                color: Colors.white60,
+              ),
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+
+          Text(
+            fileName,
+            style: const TextStyle(
+              fontSize: 12,
+              color: Colors.white38,
+            ),
+            overflow: TextOverflow.ellipsis,
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildToolbar() {
+    return Container(
+      height: 62,
+      padding: const EdgeInsets.symmetric(horizontal: 12),
+      decoration: BoxDecoration(
+        color: Theme.of(context).colorScheme.surface,
+        border: const Border(
+          bottom: BorderSide(
+            color: Colors.white12,
+          ),
+        ),
+      ),
+      child: Row(
+        children: [
+          const Icon(
+            Icons.colorize,
+            color: Colors.blue,
+          ),
+
+          const SizedBox(width: 10),
+
+          const Text(
+            'PRINT COLOR STUDIO',
+            style: TextStyle(
+              fontWeight: FontWeight.bold,
+              letterSpacing: 1,
+            ),
+          ),
+
+          const SizedBox(width: 20),
+
+          FilledButton.icon(
+            onPressed: openImage,
+            icon: const Icon(Icons.folder_open),
+            label: const Text('OPEN'),
+          ),
+
+          const SizedBox(width: 8),
+
+          OutlinedButton.icon(
+            onPressed: openReference,
+            icon: const Icon(Icons.photo),
+            label: const Text('REFERENCE'),
+          ),
+
+          const Spacer(),
+
+          IconButton(
+            tooltip: 'Rotate left',
+            onPressed: rotateLeft,
+            icon: const Icon(Icons.rotate_left),
+          ),
+
+          IconButton(
+            tooltip: 'Rotate right',
+            onPressed: rotateRight,
+            icon: const Icon(Icons.rotate_right),
+          ),
+
+          IconButton(
+            tooltip: 'Zoom out',
+            onPressed: zoomOut,
+            icon: const Icon(Icons.zoom_out),
+          ),
+
+          Text(
+            '${(zoom * 100).round()}%',
+            style: const TextStyle(
+              fontSize: 12,
+              color: Colors.white60,
+            ),
+          ),
+
+          IconButton(
+            tooltip: 'Zoom in',
+            onPressed: zoomIn,
+            icon: const Icon(Icons.zoom_in),
+          ),
+
+          const SizedBox(width: 8),
+
+          FilledButton.icon(
+            onPressed: exportImage,
+            icon: const Icon(Icons.save_alt),
+            label: const Text('EXPORT'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: SafeArea(
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            final compact = constraints.maxWidth < 900;
+
+            if (compact) {
+              return Column(
+                children: [
+                  _buildToolbar(),
+
+                  Expanded(
+                    child: Column(
+                      children: [
+                        Expanded(
+                          flex: 5,
+                          child: Container(
+                            color: const Color(0xFF151515),
+                            child: _buildCanvas(),
+                          ),
+                        ),
+
+                        Expanded(
+                          flex: 5,
+                          child: DefaultTabController(
+                            length: 2,
+                            child: Column(
+                              children: [
+                                const TabBar(
+                                  tabs: [
+                                    Tab(text: 'CORRECTION'),
+                                    Tab(text: 'PRESETS'),
+                                  ],
+                                ),
+
+                                Expanded(
+                                  child: TabBarView(
+                                    children: [
+                                      _buildLeftPanel(),
+                                      _buildRightPanel(),
+                                    ],
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+
+                  _buildStatusBar(),
+                ],
+              );
+            }
+
+            return Column(
+              children: [
+                _buildToolbar(),
+
+                Expanded(
+                  child: Row(
+                    children: [
+                      SizedBox(
+                        width: 290,
+                        child: Container(
+                          decoration: BoxDecoration(
+                            color: Theme.of(context)
+                                .colorScheme
+                                .surface,
+                            border: const Border(
+                              right: BorderSide(
+                                color: Colors.white12,
+                              ),
+                            ),
+                          ),
+                          child: _buildLeftPanel(),
+                        ),
+                      ),
+
+                      Expanded(
+                        child: Container(
+                          color: const Color(0xFF151515),
+                          child: _buildCanvas(),
+                        ),
+                      ),
+
+                      SizedBox(
+                        width: 260,
+                        child: Container(
+                          decoration: BoxDecoration(
+                            color: Theme.of(context)
+                                .colorScheme
+                                .surface,
+                            border: const Border(
+                              left: BorderSide(
+                                color: Colors.white12,
+                              ),
+                            ),
+                          ),
+                          child: _buildRightPanel(),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+
+                _buildStatusBar(),
+              ],
+            );
+          },
+        ),
+      ),
+    );
+  }
+}
