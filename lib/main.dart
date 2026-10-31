@@ -1,18 +1,16 @@
-import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 import 'dart:math' as math;
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:image/image.dart' as img;
 
 import 'models/color_selection.dart';
 import 'models/mask_data.dart';
-import 'services/cmyk_processor.dart';
+import 'services/background_tasks.dart';
 import 'services/color_detector.dart';
-import 'services/mask_generator.dart';
+import 'services/project_file.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -97,6 +95,24 @@ class _EditorPageState
   MaskData? mask;
 
   // ----------------------------------------------------------
+  // PREVIEW CACHES
+  // ----------------------------------------------------------
+
+  /// PNG-версия изображения для показа на экране.
+  /// Ключ — сам объект изображения, поэтому запись исчезает
+  /// вместе с изображением.
+  final Expando<Uint8List> _pngCache =
+      Expando<Uint8List>();
+
+  /// Готовая картинка предпросмотра маски.
+  final Expando<Uint8List> _overlayCache =
+      Expando<Uint8List>();
+
+  /// Зум и сдвиг изображения (нужен для точного выбора цвета).
+  final TransformationController _viewController =
+      TransformationController();
+
+  // ----------------------------------------------------------
   // CMYK
   // ----------------------------------------------------------
 
@@ -132,6 +148,8 @@ class _EditorPageState
   // HISTORY
   // ----------------------------------------------------------
 
+  static const int _maxHistory = 10;
+
   final List<_HistorySnapshot> history =
       <_HistorySnapshot>[];
 
@@ -147,7 +165,7 @@ class _EditorPageState
     }
 
     try {
-            final result =
+      final result =
           await FilePicker.pickFiles(
         type: FileType.custom,
         allowedExtensions: <String>[
@@ -190,17 +208,16 @@ class _EditorPageState
       final bytes =
           await File(path).readAsBytes();
 
-      final decoded =
-          img.decodeImage(bytes);
+      // Декодирование идёт в фоне и приводит изображение
+      // к 8 бит на канал (RGBA).
+      final normalized =
+          await decodeImageAsync(bytes);
 
-      if (decoded == null) {
+      if (normalized == null) {
         throw Exception(
           'Формат изображения не поддерживается.',
         );
       }
-
-      final normalized =
-          img.Image.from(decoded);
 
       if (!mounted) {
         return;
@@ -208,7 +225,7 @@ class _EditorPageState
 
       setState(() {
         originalBytes =
-            Uint8List.fromList(bytes);
+            bytes;
 
         originalImage =
             normalized;
@@ -244,6 +261,9 @@ class _EditorPageState
 
         history.clear();
         historyIndex = -1;
+
+        _viewController.value =
+            Matrix4.identity();
 
         processing = false;
 
@@ -346,8 +366,9 @@ class _EditorPageState
             connectedOnly,
       );
 
-      final generated =
-          MaskGenerator.generate(
+      // Маска и её предпросмотр считаются в фоне.
+      final selectionResult =
+          await computeSelectionAsync(
         image: image,
         selection: selection,
         tapX: selectedX,
@@ -357,6 +378,12 @@ class _EditorPageState
       if (!mounted) {
         return;
       }
+
+      final generated =
+          selectionResult.mask;
+
+      _overlayCache[generated] =
+          selectionResult.overlayPng;
 
       setState(() {
         mask = generated;
@@ -414,7 +441,7 @@ class _EditorPageState
 
     try {
       final result =
-          CmykProcessor.applyCorrection(
+          await applyCmykAsync(
         source:
             processedImage ??
                 image,
@@ -429,6 +456,12 @@ class _EditorPageState
       setState(() {
         processedImage = result;
         processing = false;
+
+        // Коррекция уже записана в изображение. Ползунки
+        // сбрасываются, чтобы повторное нажатие «Применить»
+        // не накапливало изменение незаметно.
+        correction =
+            const CmykCorrection();
 
         statusMessage =
             'CMYK-коррекция применена';
@@ -486,8 +519,11 @@ class _EditorPageState
 
     try {
       final result =
-          _applyGlobalToImage(
-        image,
+          await applyGlobalAsync(
+        source: image,
+        brightness: brightness,
+        contrast: contrast,
+        saturation: saturation,
       );
 
       if (!mounted) {
@@ -497,6 +533,11 @@ class _EditorPageState
       setState(() {
         processedImage = result;
         processing = false;
+
+        // Как и в CMYK: после применения ползунки сбрасываются.
+        brightness = 0.0;
+        contrast = 0.0;
+        saturation = 0.0;
 
         statusMessage =
             'Общая коррекция применена';
@@ -516,124 +557,6 @@ class _EditorPageState
             'Ошибка коррекции: $e';
       });
     }
-  }
-
-  // ----------------------------------------------------------
-  // GLOBAL IMAGE PROCESSOR
-  // ----------------------------------------------------------
-
-  img.Image _applyGlobalToImage(
-    img.Image source,
-  ) {
-    final result =
-        source.clone();
-
-    final brightnessFactor =
-        brightness / 100.0;
-
-    final contrastFactor =
-        (100.0 + contrast) /
-        100.0;
-
-    final saturationFactor =
-        (100.0 + saturation) /
-        100.0;
-
-    for (var y = 0;
-        y < result.height;
-        y++) {
-      for (var x = 0;
-          x < result.width;
-          x++) {
-        final pixel =
-            source.getPixel(
-          x,
-          y,
-        );
-
-        var r =
-            pixel.r.toDouble();
-
-        var g =
-            pixel.g.toDouble();
-
-        var b =
-            pixel.b.toDouble();
-
-        r +=
-            brightnessFactor *
-            255.0;
-
-        g +=
-            brightnessFactor *
-            255.0;
-
-        b +=
-            brightnessFactor *
-            255.0;
-
-        r =
-            ((r - 128.0) *
-                    contrastFactor) +
-                128.0;
-
-        g =
-            ((g - 128.0) *
-                    contrastFactor) +
-                128.0;
-
-        b =
-            ((b - 128.0) *
-                    contrastFactor) +
-                128.0;
-
-        final gray =
-            0.299 * r +
-            0.587 * g +
-            0.114 * b;
-
-        r =
-            gray +
-            (r - gray) *
-                saturationFactor;
-
-        g =
-            gray +
-            (g - gray) *
-                saturationFactor;
-
-        b =
-            gray +
-            (b - gray) *
-                saturationFactor;
-
-        result.setPixelRgba(
-          x,
-          y,
-          _byte(r),
-          _byte(g),
-          _byte(b),
-          pixel.a.toInt(),
-        );
-      }
-    }
-
-    return result;
-  }
-
-  // ----------------------------------------------------------
-  // BYTE CLAMP
-  // ----------------------------------------------------------
-
-  int _byte(
-    double value,
-  ) {
-    return value
-        .round()
-        .clamp(
-          0,
-          255,
-        );
   }
 
   // ----------------------------------------------------------
@@ -799,33 +722,6 @@ class _EditorPageState
     setState(() {
       saturation = value;
     });
-  }
-
-  // ============================================================
-  // MASK PREVIEW
-  // ============================================================
-
-  Color _maskColorForValue(
-    int value,
-  ) {
-    if (value <= 0) {
-      return Colors.transparent;
-    }
-
-    final alpha =
-        (value * 0.72)
-            .round()
-            .clamp(
-              0,
-              255,
-            );
-
-    return Color.fromARGB(
-      alpha,
-      0,
-      180,
-      255,
-    );
   }
 
   // ============================================================
@@ -1073,30 +969,6 @@ class _EditorPageState
   }
 
   // ============================================================
-  // COLOR DISTANCE
-  // ============================================================
-
-  double _colorDistance(
-    RgbColor a,
-    RgbColor b,
-  ) {
-    final dr =
-        a.r - b.r;
-
-    final dg =
-        a.g - b.g;
-
-    final db =
-        a.b - b.b;
-
-    return math.sqrt(
-      dr * dr +
-          dg * dg +
-          db * db,
-    );
-  }
-
-  // ============================================================
   // SELECTION STATUS
   // ============================================================
 
@@ -1105,17 +977,8 @@ class _EditorPageState
       return 'Нажмите на цвет изображения';
     }
 
-    final distance =
-        selectedColor == null
-            ? 0.0
-            : _colorDistance(
-                selectedColor!,
-                selectedColor!,
-              );
-
     return '${selectedColor!.hex} '
-        '• диапазон ${tolerance.round()}% '
-        '• расстояние ${distance.toStringAsFixed(0)}';
+        '• диапазон ${tolerance.round()}%';
   }
 
   // ============================================================
@@ -1397,10 +1260,7 @@ class _EditorPageState
           ],
         ),
         Slider(
-          value: value.clamp(
-            min,
-            max,
-          ),
+          value: value.clamp(min, max).toDouble(),
           min: min,
           max: max,
           divisions: divisions,
@@ -1547,10 +1407,7 @@ class _EditorPageState
         ),
         Expanded(
           child: Slider(
-            value: value.clamp(
-              -100,
-              100,
-            ),
+            value: value.clamp(-100.0, 100.0).toDouble(),
             min: -100,
             max: 100,
             divisions: 200,
@@ -1689,10 +1546,7 @@ class _EditorPageState
         ),
         Expanded(
           child: Slider(
-            value: value.clamp(
-              -100,
-              100,
-            ),
+            value: value.clamp(-100.0, 100.0).toDouble(),
             min: -100,
             max: 100,
             divisions: 200,
@@ -1805,14 +1659,10 @@ class _EditorPageState
   // ============================================================
 
   Widget _buildImagePreview() {
-    final original =
-        originalImage;
+    final original = originalImage;
+    final processed = processedImage;
 
-    final processed =
-        processedImage;
-
-    if (original == null ||
-        processed == null) {
+    if (original == null || processed == null) {
       return const Center(
         child: Text(
           'Изображение отсутствует',
@@ -1820,83 +1670,69 @@ class _EditorPageState
       );
     }
 
-    final displayImage =
-        showBefore
-            ? original
-            : processed;
+    final displayImage = showBefore ? original : processed;
 
     return LayoutBuilder(
-      builder:
-          (context, constraints) {
+      builder: (context, constraints) {
+        final viewportSize = Size(
+          constraints.maxWidth,
+          constraints.maxHeight,
+        );
+
         return GestureDetector(
-          behavior:
-              HitTestBehavior.opaque,
-          onTapDown:
-              processing
-                  ? null
-                  : (details) {
-                      final point =
-                          _screenToImage(
-                        details.localPosition,
-                        Size(
-                          constraints.maxWidth,
-                          constraints.maxHeight,
-                        ),
-                        displayImage,
-                      );
+          behavior: HitTestBehavior.opaque,
 
-                      final valid =
-                          _validImagePoint(
-                        point,
-                        displayImage,
-                      );
+          // onTapUp срабатывает только на настоящее касание:
+          // сдвиг и масштабирование изображения цвет не выбирают.
+          onTapUp: processing
+              ? null
+              : (details) {
+                  // Учитываем зум и сдвиг InteractiveViewer.
+                  final scenePoint = _viewController.toScene(
+                    details.localPosition,
+                  );
 
-                      if (valid == null) {
-                        return;
-                      }
+                  final point = _screenToImage(
+                    scenePoint,
+                    viewportSize,
+                    displayImage,
+                  );
 
-                      _pickColor(
-                        valid.dx.floor(),
-                        valid.dy.floor(),
-                      );
-                    },
+                  final valid = _validImagePoint(
+                    point,
+                    displayImage,
+                  );
+
+                  if (valid == null) {
+                    return;
+                  }
+
+                  _pickColor(
+                    valid.dx.floor(),
+                    valid.dy.floor(),
+                  );
+                },
           child: Stack(
             fit: StackFit.expand,
             children: [
               InteractiveViewer(
+                transformationController: _viewController,
                 minScale: 0.25,
                 maxScale: 8.0,
-                boundaryMargin:
-                    const EdgeInsets.all(
-                  40,
-                ),
+                boundaryMargin: const EdgeInsets.all(40),
                 child: Center(
                   child: AspectRatio(
-                    aspectRatio:
-                        displayImage.width /
-                            displayImage.height,
-                    child: _buildImageWithMask(
-                      displayImage,
-                    ),
+                    aspectRatio: displayImage.width / displayImage.height,
+                    child: _buildImageWithMask(displayImage),
                   ),
                 ),
               ),
-
-              if (selectedX != null &&
-                  selectedY != null &&
-                  !showBefore)
-                _buildSelectionMarker(
-                  displayImage,
-                  constraints,
-                ),
 
               Positioned(
                 left: 12,
                 top: 12,
                 child: _buildPreviewBadge(
-                  showBefore
-                      ? 'ДО'
-                      : 'ПОСЛЕ',
+                  showBefore ? 'ДО' : 'ПОСЛЕ',
                 ),
               ),
 
@@ -1905,8 +1741,7 @@ class _EditorPageState
                   child: Container(
                     color: Colors.black54,
                     child: const Center(
-                      child:
-                          CircularProgressIndicator(),
+                      child: CircularProgressIndicator(),
                     ),
                   ),
                 ),
@@ -1924,39 +1759,37 @@ class _EditorPageState
   Widget _buildImageWithMask(
     img.Image image,
   ) {
-    final png =
-        Uint8List.fromList(
-      img.encodePng(image),
-    );
+    // PNG кодируется один раз для каждого изображения,
+    // а не при каждой перерисовке интерфейса.
+    final png = _pngCache[image] ??=
+        Uint8List.fromList(img.encodePng(image));
 
-    final imageWidget =
-        Image.memory(
-      png,
-      fit: BoxFit.contain,
-      filterQuality:
-          FilterQuality.high,
-      gaplessPlayback: true,
-    );
+    final currentMask = mask;
 
-    if (!showMask ||
-        mask == null ||
-        showBefore) {
-      return imageWidget;
-    }
+    final overlay =
+        currentMask == null ? null : _overlayCache[currentMask];
 
     return Stack(
       fit: StackFit.expand,
       children: [
-        imageWidget,
-        IgnorePointer(
-          child:
-              CustomPaint(
-            painter:
-                _MaskPainter(
-              mask: mask!,
+        Image.memory(
+          png,
+          fit: BoxFit.contain,
+          filterQuality: FilterQuality.high,
+          gaplessPlayback: true,
+        ),
+
+        if (showMask && !showBefore && overlay != null)
+          IgnorePointer(
+            child: Image.memory(
+              overlay,
+              fit: BoxFit.contain,
+              filterQuality: FilterQuality.none,
+              gaplessPlayback: true,
             ),
           ),
-        ),
+
+        if (!showBefore) _buildSelectionMarker(image),
       ],
     );
   }
@@ -1965,99 +1798,53 @@ class _EditorPageState
   // SELECTION MARKER
   // ============================================================
 
+  /// Маркер рисуется внутри изображения, поэтому он
+  /// двигается и масштабируется вместе с ним.
   Widget _buildSelectionMarker(
     img.Image image,
-    BoxConstraints constraints,
   ) {
-    if (selectedX == null ||
-        selectedY == null) {
-      return const SizedBox
-          .shrink();
+    final markerX = selectedX;
+    final markerY = selectedY;
+
+    if (markerX == null || markerY == null) {
+      return const SizedBox.shrink();
     }
 
-    final imageRatio =
-        image.width /
-            image.height;
-
-    final displayRatio =
-        constraints.maxWidth /
-            constraints.maxHeight;
-
-    double width;
-    double height;
-
-    if (imageRatio >
-        displayRatio) {
-      width =
-          constraints.maxWidth;
-
-      height =
-          width / imageRatio;
-    } else {
-      height =
-          constraints.maxHeight;
-
-      width =
-          height * imageRatio;
-    }
-
-    final left =
-        (constraints.maxWidth -
-                width) /
-            2;
-
-    final top =
-        (constraints.maxHeight -
-                height) /
-            2;
-
-    final x =
-        left +
-        selectedX! *
-            width /
-            image.width;
-
-    final y =
-        top +
-        selectedY! *
-            height /
-            image.height;
-
-    return Positioned(
-      left:
-          (x - 9).clamp(
-        0.0,
-        math.max(
-          0.0,
-          constraints.maxWidth - 18,
-        ),
-      ),
-      top:
-          (y - 9).clamp(
-        0.0,
-        math.max(
-          0.0,
-          constraints.maxHeight - 18,
-        ),
-      ),
+    return Positioned.fill(
       child: IgnorePointer(
-        child: Container(
-          width: 18,
-          height: 18,
-          decoration:
-              BoxDecoration(
-            shape:
-                BoxShape.circle,
-            border: Border.all(
-              color: Colors.white,
-              width: 2,
-            ),
-            boxShadow: const [
-              BoxShadow(
-                blurRadius: 4,
-              ),
-            ],
-          ),
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            final centerX =
+                (markerX + 0.5) * constraints.maxWidth / image.width;
+
+            final centerY =
+                (markerY + 0.5) * constraints.maxHeight / image.height;
+
+            return Stack(
+              children: [
+                Positioned(
+                  left: centerX - 9,
+                  top: centerY - 9,
+                  child: Container(
+                    width: 18,
+                    height: 18,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      border: Border.all(
+                        color: Colors.white,
+                        width: 2,
+                      ),
+                      boxShadow: const [
+                        BoxShadow(
+                          blurRadius: 4,
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
+            );
+          },
         ),
       ),
     );
@@ -2230,7 +2017,8 @@ class _EditorPageState
                 tooltip: 'Сохранить проект',
                 onPressed:
                     originalImage == null ||
-                            processing
+                            processing ||
+                            exporting
                         ? null
                         : _saveProject,
                 icon: const Icon(
@@ -2242,7 +2030,8 @@ class _EditorPageState
                 tooltip: 'Экспорт изображения',
                 onPressed:
                     processedImage == null ||
-                            processing
+                            processing ||
+                            exporting
                         ? null
                         : _exportImage,
                 icon: const Icon(
@@ -2294,14 +2083,8 @@ class _EditorPageState
 
               const Spacer(),
 
-              IconButton(
-                tooltip: 'Справка',
-                onPressed:
-                    _showHelp,
-                icon: const Icon(
-                  Icons.help_outline,
-                ),
-              ),
+              // Информация, справка, закрытие изображения.
+              _buildExtraActions(),
 
               IconButton(
                 tooltip: 'Сбросить редактор',
@@ -2542,7 +2325,7 @@ class _EditorPageState
                   children: [
                     Expanded(
                       child:
-                          _buildImageArea(),
+                          _buildWorkspace(),
                     ),
                     _buildEditorInfo(),
                   ],
@@ -2585,7 +2368,7 @@ class _EditorPageState
             children: [
               Expanded(
                 flex: 6,
-                child: _buildImageArea(),
+                child: _buildWorkspace(),
               ),
 
               _buildEditorInfo(),
@@ -2712,7 +2495,9 @@ class _EditorPageState
     historyIndex =
         history.length - 1;
 
-    if (history.length > 30) {
+    // Каждый шаг хранит полную копию изображения,
+    // поэтому глубина истории ограничена.
+    if (history.length > _maxHistory) {
       history.removeAt(0);
       historyIndex--;
     }
@@ -2859,7 +2644,7 @@ class _EditorPageState
     return <String, dynamic>{
       'format':
           'print_color_app_project',
-      'version': 1,
+      'version': ProjectFile.currentVersion,
       'createdBy':
           'Print Color App',
 
@@ -2926,15 +2711,62 @@ class _EditorPageState
   }
 
   // ============================================================
+  // SAVE BYTES
+  // ============================================================
+
+  /// Показывает диалог сохранения и гарантирует, что файл записан.
+  ///
+  /// На Android/iOS файл записывает сам плагин, на компьютерах
+  /// при необходимости файл дописывается здесь.
+  Future<String?> _saveBytes({
+    required String dialogTitle,
+    required String fileName,
+    required String extension,
+    required Uint8List bytes,
+  }) async {
+    final path = await FilePicker.saveFile(
+      dialogTitle: dialogTitle,
+      fileName: fileName,
+      type: FileType.custom,
+      allowedExtensions: <String>[
+        extension,
+      ],
+      bytes: bytes,
+    );
+
+    if (path == null) {
+      return null;
+    }
+
+    if (Platform.isWindows ||
+        Platform.isLinux ||
+        Platform.isMacOS) {
+      final file = File(path);
+
+      if (!await file.exists() ||
+          await file.length() != bytes.length) {
+        await file.writeAsBytes(
+          bytes,
+          flush: true,
+        );
+      }
+    }
+
+    return path;
+  }
+
+  // ============================================================
   // SAVE PROJECT
   // ============================================================
 
   Future<void> _saveProject() async {
-    final image =
-        originalImage;
+    final original = originalImage;
+    final processed = processedImage ?? originalImage;
 
-    if (image == null ||
-        processing) {
+    if (original == null ||
+        processed == null ||
+        processing ||
+        exporting) {
       return;
     }
 
@@ -2945,102 +2777,21 @@ class _EditorPageState
     });
 
     try {
-      final projectData =
-          jsonEncode(
-        _projectJson(),
-      );
-
-      final imageBytes =
-          Uint8List.fromList(
-        img.encodePng(image),
-      );
-
-      final projectBytes =
-          utf8.encode(
-        projectData,
-      );
-
-      final combined =
-          <int>[];
-
-      combined.addAll(
-        <int>[
-          0x50,
-          0x43,
-          0x50,
-          0x52,
-          0x4F,
-          0x4A,
-          0x01,
-        ],
-      );
-
-      final jsonLength =
-          projectBytes.length;
-
-      combined.add(
-        (jsonLength >> 24) &
-            0xFF,
-      );
-      combined.add(
-        (jsonLength >> 16) &
-            0xFF,
-      );
-      combined.add(
-        (jsonLength >> 8) &
-            0xFF,
-      );
-      combined.add(
-        jsonLength & 0xFF,
-      );
-
-      combined.addAll(
-        projectBytes,
-      );
-
-      final imageLength =
-          imageBytes.length;
-
-      combined.add(
-        (imageLength >> 24) &
-            0xFF,
-      );
-      combined.add(
-        (imageLength >> 16) &
-            0xFF,
-      );
-      combined.add(
-        (imageLength >> 8) &
-            0xFF,
-      );
-      combined.add(
-        imageLength & 0xFF,
-      );
-
-      combined.addAll(
-        imageBytes,
+      final bytes = await encodeProjectAsync(
+        settings: _projectJson(),
+        original: original,
+        processed: processed,
       );
 
       final fileName =
           '${_baseName(openedFileName ?? 'project')}'
           '.pcproj';
 
-      final path =
-          await FilePicker.saveFile(
-        dialogTitle:
-            'Сохранить проект',
-        fileName:
-            fileName,
-        type:
-            FileType.custom,
-        allowedExtensions:
-            <String>[
-          'pcproj',
-        ],
-        bytes:
-            Uint8List.fromList(
-          combined,
-        ),
+      final path = await _saveBytes(
+        dialogTitle: 'Сохранить проект',
+        fileName: fileName,
+        extension: 'pcproj',
+        bytes: bytes,
       );
 
       if (!mounted) {
@@ -3065,6 +2816,170 @@ class _EditorPageState
             'Ошибка сохранения проекта: $e';
       });
     }
+  }
+
+  // ============================================================
+  // OPEN PROJECT
+  // ============================================================
+
+  Future<void> _openProject() async {
+    if (processing || exporting) {
+      return;
+    }
+
+    try {
+      final result = await FilePicker.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: <String>[
+          'pcproj',
+        ],
+      );
+
+      if (result == null || result.isEmpty) {
+        return;
+      }
+
+      final picked = result.first;
+      final path = picked.path;
+
+      if (path == null || path.isEmpty) {
+        _showMessage(
+          'Не удалось получить путь к файлу.',
+        );
+        return;
+      }
+
+      setState(() {
+        processing = true;
+        statusMessage =
+            'Загрузка проекта...';
+      });
+
+      final bytes = await File(path).readAsBytes();
+      final project = await decodeProjectAsync(bytes);
+
+      if (!mounted) {
+        return;
+      }
+
+      final settings = project.settings;
+      final source = jsonMapOf(settings['source']);
+      final selection = jsonMapOf(settings['selection']);
+      final cmyk = jsonMapOf(settings['correction']);
+      final global = jsonMapOf(settings['global']);
+
+      final width = project.original.width;
+      final height = project.original.height;
+
+      final r = jsonInt(selection['r']);
+      final g = jsonInt(selection['g']);
+      final b = jsonInt(selection['b']);
+
+      final RgbColor? color =
+          (r != null && g != null && b != null)
+              ? RgbColor(
+                  r: r.clamp(0, 255).toInt(),
+                  g: g.clamp(0, 255).toInt(),
+                  b: b.clamp(0, 255).toInt(),
+                )
+              : null;
+
+      final rawX = jsonInt(selection['x']);
+      final rawY = jsonInt(selection['y']);
+
+      final hasPoint = color != null &&
+          rawX != null &&
+          rawY != null &&
+          rawX >= 0 &&
+          rawY >= 0 &&
+          rawX < width &&
+          rawY < height;
+
+      final int? tapX = hasPoint ? rawX : null;
+      final int? tapY = hasPoint ? rawY : null;
+
+      setState(() {
+        originalImage = project.original;
+        processedImage = project.processed;
+        originalBytes = null;
+
+        openedFileName =
+            jsonString(source['fileName']) ?? picked.name;
+
+        openedFilePath =
+            jsonString(source['filePath']) ?? path;
+
+        selectedColor = color;
+        selectedX = tapX;
+        selectedY = tapY;
+
+        tolerance =
+            jsonDouble(selection['tolerance'], 20.0)
+                .clamp(0.0, 100.0)
+                .toDouble();
+
+        softness =
+            jsonDouble(selection['softness'], 10.0)
+                .clamp(0.0, 100.0)
+                .toDouble();
+
+        connectedOnly =
+            jsonBool(selection['connectedOnly'], false);
+
+        correction = CmykCorrection(
+          cyan: _correctionValue(cmyk['cyan']),
+          magenta: _correctionValue(cmyk['magenta']),
+          yellow: _correctionValue(cmyk['yellow']),
+          black: _correctionValue(cmyk['black']),
+        );
+
+        brightness = _correctionValue(global['brightness']);
+        contrast = _correctionValue(global['contrast']);
+        saturation = _correctionValue(global['saturation']);
+
+        mask = null;
+
+        showBefore = false;
+        showMask = color != null;
+
+        history.clear();
+        historyIndex = -1;
+
+        _viewController.value = Matrix4.identity();
+
+        processing = false;
+
+        statusMessage =
+            'Проект загружен';
+      });
+
+      await _addHistoryPoint(
+        'Загруженный проект',
+      );
+
+      if (selectedColor != null) {
+        await _generateSelection();
+      }
+    } catch (e) {
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        processing = false;
+        statusMessage =
+            'Ошибка загрузки проекта: $e';
+      });
+    }
+  }
+
+  /// Значение коррекции из файла проекта, ограниченное -100...+100.
+  double _correctionValue(
+    Object? value,
+  ) {
+    return jsonDouble(value, 0.0)
+        .clamp(-100.0, 100.0)
+        .toDouble();
   }
 
   // ============================================================
@@ -3108,27 +3023,16 @@ class _EditorPageState
     });
 
     try {
-      final bytes =
-          Uint8List.fromList(
-        img.encodePng(image),
-      );
+      final bytes = await encodePngAsync(image);
 
       final fileName =
           '${_baseName(openedFileName ?? 'corrected')}'
           '_corrected.png';
 
-      final path =
-          await FilePicker.saveFile(
-        dialogTitle:
-            'Экспортировать изображение',
-        fileName:
-            fileName,
-        type:
-            FileType.custom,
-        allowedExtensions:
-            <String>[
-          'png',
-        ],
+      final path = await _saveBytes(
+        dialogTitle: 'Экспортировать изображение',
+        fileName: fileName,
+        extension: 'png',
         bytes: bytes,
       );
 
@@ -3193,6 +3097,9 @@ class _EditorPageState
       history.clear();
       historyIndex = -1;
 
+      _viewController.value =
+          Matrix4.identity();
+
       statusMessage =
           'Редактор сброшен';
     });
@@ -3223,10 +3130,27 @@ class _EditorPageState
       selectedX = null;
       selectedY = null;
 
+      tolerance = 20.0;
+      softness = 10.0;
+      connectedOnly = false;
+
       mask = null;
+
+      correction =
+          const CmykCorrection();
+
+      brightness = 0.0;
+      contrast = 0.0;
+      saturation = 0.0;
+
+      showBefore = false;
+      showMask = false;
 
       history.clear();
       historyIndex = -1;
+
+      _viewController.value =
+          Matrix4.identity();
 
       statusMessage =
           'Откройте изображение для начала работы';
@@ -3350,7 +3274,8 @@ class _EditorPageState
                 Text(
                   'PNG сохраняет готовое исправленное '
                   'изображение. Проект .pcproj сохраняет '
-                  'настройки текущей работы.',
+                  'исходник, результат и настройки; открыть '
+                  'его можно через меню ⋮ → «Открыть проект».',
                 ),
               ],
             ),
@@ -3496,6 +3421,10 @@ class _EditorPageState
       onSelected:
           (value) {
         switch (value) {
+          case 'project':
+            _openProject();
+            break;
+
           case 'info':
             _showFileInformation();
             break;
@@ -3512,6 +3441,17 @@ class _EditorPageState
       itemBuilder:
           (context) {
         return const [
+          PopupMenuItem<String>(
+            value: 'project',
+            child: ListTile(
+              leading:
+                  Icon(Icons.folder_special),
+              title:
+                  Text('Открыть проект'),
+              contentPadding:
+                  EdgeInsets.zero,
+            ),
+          ),
           PopupMenuItem<String>(
             value: 'info',
             child: ListTile(
@@ -3606,99 +3546,6 @@ class _EditorPageState
     );
   }
 
-  // ============================================================
-  // DESKTOP WORKSPACE
-  // ============================================================
-
-  Widget _buildDesktopWorkspace(
-    BoxConstraints constraints,
-  ) {
-    final panelWidth =
-        math.min(
-      440.0,
-      math.max(
-        340.0,
-        constraints.maxWidth *
-            0.31,
-      ),
-    );
-
-    return Column(
-      children: [
-        _buildToolbar(),
-
-        Expanded(
-          child: Row(
-            children: [
-              Expanded(
-                child: Column(
-                  children: [
-                    Expanded(
-                      child:
-                          _buildWorkspace(),
-                    ),
-                    _buildEditorInfo(),
-                  ],
-                ),
-              ),
-
-              VerticalDivider(
-                width: 1,
-                thickness: 1,
-                color:
-                    Theme.of(context)
-                        .dividerColor,
-              ),
-
-              SizedBox(
-                width: panelWidth,
-                child:
-                    _buildControlsPanel(),
-              ),
-            ],
-          ),
-        ),
-
-        _buildStatusBar(),
-      ],
-    );
-  }
-
-  // ============================================================
-  // MOBILE WORKSPACE
-  // ============================================================
-
-  Widget _buildMobileWorkspace(
-    BoxConstraints constraints,
-  ) {
-    return Column(
-      children: [
-        _buildToolbar(),
-
-        Expanded(
-          child: Column(
-            children: [
-              Expanded(
-                flex: 6,
-                child:
-                    _buildWorkspace(),
-              ),
-
-              _buildEditorInfo(),
-
-              Expanded(
-                flex: 5,
-                child:
-                    _buildControlsPanel(),
-              ),
-            ],
-          ),
-        ),
-
-        _buildStatusBar(),
-      ],
-    );
-  }
     // ============================================================
   // DISPOSE
   // ============================================================
@@ -3706,6 +3553,7 @@ class _EditorPageState
   @override
   void dispose() {
     _editorFocus.dispose();
+    _viewController.dispose();
     super.dispose();
   }
 }
@@ -3749,102 +3597,4 @@ class _HistorySnapshot {
     required this.contrast,
     required this.saturation,
   });
-}
-
-// ============================================================
-// MASK PAINTER
-// ============================================================
-
-class _MaskPainter extends CustomPainter {
-  final MaskData mask;
-
-  const _MaskPainter({
-    required this.mask,
-  });
-
-  @override
-  void paint(
-    Canvas canvas,
-    Size size,
-  ) {
-    if (mask.width <= 0 ||
-        mask.height <= 0 ||
-        mask.values.isEmpty) {
-      return;
-    }
-
-    final cellWidth =
-        size.width /
-            mask.width;
-
-    final cellHeight =
-        size.height /
-            mask.height;
-
-    final paint =
-        Paint()
-          ..style =
-              PaintingStyle.fill
-          ..isAntiAlias = false;
-
-    final values =
-        mask.values;
-
-    for (var y = 0;
-        y < mask.height;
-        y++) {
-      for (var x = 0;
-          x < mask.width;
-          x++) {
-        final index =
-            y * mask.width + x;
-
-        if (index < 0 ||
-            index >= values.length) {
-          continue;
-        }
-
-        final value =
-            values[index];
-
-        if (value <= 0) {
-          continue;
-        }
-
-        final alpha =
-            (value * 0.55)
-                .round()
-                .clamp(
-                  0,
-                  255,
-                );
-
-        paint.color =
-            Color.fromARGB(
-          alpha,
-          0,
-          190,
-          255,
-        );
-
-        canvas.drawRect(
-          Rect.fromLTWH(
-            x * cellWidth,
-            y * cellHeight,
-            cellWidth + 0.5,
-            cellHeight + 0.5,
-          ),
-          paint,
-        );
-      }
-    }
-  }
-
-  @override
-  bool shouldRepaint(
-    covariant _MaskPainter oldDelegate,
-  ) {
-    return oldDelegate.mask !=
-        mask;
-  }
 }

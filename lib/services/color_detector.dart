@@ -23,9 +23,9 @@ class ColorDetector {
     final pixel = image.getPixel(x, y);
 
     return RgbColor(
-      r: pixel.r.toInt().clamp(0, 255),
-      g: pixel.g.toInt().clamp(0, 255),
-      b: pixel.b.toInt().clamp(0, 255),
+      r: pixel.r.toInt().clamp(0, 255).toInt(),
+      g: pixel.g.toInt().clamp(0, 255).toInt(),
+      b: pixel.b.toInt().clamp(0, 255).toInt(),
     );
   }
 
@@ -50,10 +50,10 @@ class ColorDetector {
     final values = Uint8List(width * height);
 
     final safeTolerance =
-        tolerance.clamp(0.0, 100.0);
+        tolerance.clamp(0.0, 100.0).toDouble();
 
     final safeSoftness =
-        softness.clamp(0.0, 100.0);
+        softness.clamp(0.0, 100.0).toDouble();
 
     const maxRgbDistance = 441.67295593;
 
@@ -118,7 +118,8 @@ class ColorDetector {
         values[y * width + x] =
             (strength * 255.0)
                 .round()
-                .clamp(0, 255);
+                .clamp(0, 255)
+                .toInt();
       }
     }
 
