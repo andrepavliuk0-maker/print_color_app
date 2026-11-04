@@ -101,7 +101,7 @@ class CmykProcessor {
          * 1.0 = полностью исправленный цвет
          */
         final strength =
-            (maskValue / 255.0).clamp(0.0, 1.0);
+            (maskValue / 255.0).clamp(0.0, 1.0).toDouble();
 
         final outputR = _blend(
           originalR,
@@ -228,18 +228,19 @@ class CmykProcessor {
   ) {
     return original +
         (corrected - original) *
-            strength.clamp(0.0, 1.0);
+            strength.clamp(0.0, 1.0).toDouble();
   }
 
   /// Ограничивает значение диапазоном 0...1.
   static double _clamp01(double value) {
-    return value.clamp(0.0, 1.0);
+    return value.clamp(0.0, 1.0).toDouble();
   }
 
   /// Переводит значение 0...255 в целое.
   static int _toByte(double value) {
     return value
         .round()
-        .clamp(0, 255);
+        .clamp(0, 255)
+        .toInt();
   }
 }

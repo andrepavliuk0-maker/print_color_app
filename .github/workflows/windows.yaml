@@ -2,6 +2,14 @@ name: Build Windows EXE and Android APK
 
 "on":
   workflow_dispatch:
+    inputs:
+      release:
+        description: "Publish the Windows build as a GitHub release (direct download link)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
 
 jobs:
   build-windows:
@@ -23,14 +31,54 @@ jobs:
       - name: Get dependencies
         run: flutter pub get
 
+      # Only real errors fail the build; style hints and warnings do not.
+      # `lib` only: `flutter create` generates its own test/widget_test.dart
+      # that refers to a class this app does not have.
+      - name: Analyze
+        run: flutter analyze lib --no-fatal-infos --no-fatal-warnings
+
+      - name: Test
+        run: flutter test test/project_file_test.dart
+
       - name: Build Windows
         run: flutter build windows --release
 
-      - name: Upload Windows EXE
+      - name: Package Windows build
+        shell: pwsh
+        run: |
+          Compress-Archive -Path "build/windows/x64/runner/Release/*" -DestinationPath "print_color_app-windows.zip" -Force
+
+      - name: Upload Windows build
         uses: actions/upload-artifact@v4
         with:
           name: windows-build
-          path: build/windows/x64/runner/Release/
+          path: print_color_app-windows.zip
+
+  release-windows:
+    name: Publish release
+    needs: build-windows
+    if: ${{ inputs.release }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download Windows build
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-build
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "build-${{ github.run_number }}" \
+            print_color_app-windows.zip \
+            --repo "${{ github.repository }}" \
+            --target "${{ github.sha }}" \
+            --title "Print Color App (Windows) build ${{ github.run_number }}" \
+            --notes "Windows build from commit ${{ github.sha }}. Unzip and run print_color_app.exe." \
+            --prerelease
 
 
   build-android:

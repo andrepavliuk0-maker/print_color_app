@@ -53,10 +53,10 @@ class MaskGenerator {
     final values = Uint8List(width * height);
 
     final tolerance =
-        selection.tolerance.clamp(0.0, 100.0);
+        selection.tolerance.clamp(0.0, 100.0).toDouble();
 
     final softness =
-        selection.softness.clamp(0.0, 100.0);
+        selection.softness.clamp(0.0, 100.0).toDouble();
 
     const maxDistance = 441.67295593;
 
@@ -123,16 +123,16 @@ class MaskGenerator {
         image.getPixel(startX, startY);
 
     final target = RgbColor(
-      r: startPixel.r.toInt().clamp(0, 255),
-      g: startPixel.g.toInt().clamp(0, 255),
-      b: startPixel.b.toInt().clamp(0, 255),
+      r: startPixel.r.toInt().clamp(0, 255).toInt(),
+      g: startPixel.g.toInt().clamp(0, 255).toInt(),
+      b: startPixel.b.toInt().clamp(0, 255).toInt(),
     );
 
     final tolerance =
-        selection.tolerance.clamp(0.0, 100.0);
+        selection.tolerance.clamp(0.0, 100.0).toDouble();
 
     final softness =
-        selection.softness.clamp(0.0, 100.0);
+        selection.softness.clamp(0.0, 100.0).toDouble();
 
     const maxDistance = 441.67295593;
 
@@ -312,8 +312,9 @@ class MaskGenerator {
   static int _strengthToByte(
     double strength,
   ) {
-    return (strength.clamp(0.0, 1.0) * 255.0)
+    return (strength.clamp(0.0, 1.0).toDouble() * 255.0)
         .round()
-        .clamp(0, 255);
+        .clamp(0, 255)
+        .toInt();
   }
 }
