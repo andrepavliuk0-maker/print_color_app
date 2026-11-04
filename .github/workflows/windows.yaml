@@ -32,8 +32,13 @@ jobs:
         run: flutter pub get
 
       # Only real errors fail the build; style hints and warnings do not.
+      # `lib` only: `flutter create` generates its own test/widget_test.dart
+      # that refers to a class this app does not have.
       - name: Analyze
-        run: flutter analyze --no-fatal-infos --no-fatal-warnings
+        run: flutter analyze lib --no-fatal-infos --no-fatal-warnings
+
+      - name: Test
+        run: flutter test test/project_file_test.dart
 
       - name: Build Windows
         run: flutter build windows --release

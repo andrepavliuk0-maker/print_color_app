@@ -2718,7 +2718,7 @@ class _EditorPageState
   ///
   /// На Android/iOS файл записывает сам плагин, на компьютерах
   /// при необходимости файл дописывается здесь.
-  Future<String?> _saveBytes({
+  Future<Uri?> _saveBytes({
     required String dialogTitle,
     required String fileName,
     required String extension,
@@ -2741,7 +2741,8 @@ class _EditorPageState
     if (Platform.isWindows ||
         Platform.isLinux ||
         Platform.isMacOS) {
-      final file = File(path);
+      // saveFile возвращает Uri, а не строку.
+      final file = File(path.toFilePath());
 
       if (!await file.exists() ||
           await file.length() != bytes.length) {
